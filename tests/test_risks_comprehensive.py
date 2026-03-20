@@ -3,17 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from dockerscope.models.container import ContainerInfo
-from dockerscope.models.risk import Risk
 from dockerscope.core.risks import (
+    _is_dangerous_mount,
     evaluate_container_risks,
     filter_risks_with_whitelist,
-    get_risk_severity,
-    get_remediation_advice,
-    _has_critical_capability,
-    _has_dangerous_capability,
-    _is_dangerous_mount,
 )
+from dockerscope.models.container import ContainerInfo
+from dockerscope.models.risk import Risk
 
 
 def _base_container(**overrides) -> ContainerInfo:
@@ -47,6 +43,19 @@ class TestPrivilegedContainer:
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "privileged_container" for r in risks)
 
+    def test_privileged_has_attack_commands(self):
+        c = _base_container(privileged=True)
+        risks = evaluate_container_risks(c)
+        priv = [r for r in risks if r.risk_type == "privileged_container"][0]
+        assert len(priv.attack_commands) > 0
+        assert "nsenter" in priv.attack_commands[0]
+
+    def test_privileged_severity_is_critical(self):
+        c = _base_container(privileged=True)
+        risks = evaluate_container_risks(c)
+        priv = [r for r in risks if r.risk_type == "privileged_container"][0]
+        assert priv.severity == "CRITICAL"
+
 
 class TestDockerSocketMount:
     def test_var_run_docker_sock(self):
@@ -77,15 +86,23 @@ class TestDockerSocketMount:
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "docker_sock_mount" for r in risks)
 
+    def test_docker_sock_has_attack_commands(self):
+        c = _base_container(mounts=[
+            {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}
+        ])
+        risks = evaluate_container_risks(c)
+        sock = [r for r in risks if r.risk_type == "docker_sock_mount"][0]
+        assert any("curl" in cmd for cmd in sock.attack_commands)
+
 
 class TestDangerousMounts:
     @pytest.mark.parametrize("path", [
         "/etc", "/root", "/boot", "/var/lib/docker",
         "/usr/bin", "/proc", "/sys", "/dev",
     ])
-    def test_dangerous_paths_detected(self, path: str):
+    def test_writable_dangerous_paths_detected(self, path: str):
         c = _base_container(mounts=[
-            {"Source": path, "Destination": "/mnt"}
+            {"Source": path, "Destination": "/mnt", "Mode": "rw"}
         ])
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "dangerous_host_mount" for r in risks)
@@ -121,6 +138,22 @@ class TestDangerousMounts:
         assert types.count("docker_sock_mount") == 1
         assert "dangerous_host_mount" not in types
 
+    def test_read_only_mount_not_flagged(self):
+        """Read-only mounts are not escape vectors."""
+        c = _base_container(mounts=[
+            {"Source": "/etc", "Destination": "/mnt/etc", "Mode": "ro"}
+        ])
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type == "dangerous_host_mount" for r in risks)
+
+    def test_writable_mount_severity_is_critical(self):
+        c = _base_container(mounts=[
+            {"Source": "/etc", "Destination": "/mnt/etc", "Mode": "rw"}
+        ])
+        risks = evaluate_container_risks(c)
+        mount_risks = [r for r in risks if r.risk_type == "dangerous_host_mount"]
+        assert mount_risks[0].severity == "CRITICAL"
+
 
 class TestHostNetworkMode:
     def test_host_mode_detected(self):
@@ -133,100 +166,121 @@ class TestHostNetworkMode:
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "host_network_mode" for r in risks)
 
+    def test_host_network_severity_is_high(self):
+        c = _base_container(network_mode="host")
+        risks = evaluate_container_risks(c)
+        net = [r for r in risks if r.risk_type == "host_network_mode"][0]
+        assert net.severity == "HIGH"
 
-class TestWideExposedPorts:
-    def test_all_interfaces_detected(self):
+
+class TestHostPidMode:
+    def test_host_pid_detected(self):
+        c = _base_container(pid_mode="host")
+        risks = evaluate_container_risks(c)
+        assert any(r.risk_type == "host_pid_mode" for r in risks)
+
+    def test_no_pid_mode_no_risk(self):
+        c = _base_container()
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type == "host_pid_mode" for r in risks)
+
+    def test_host_pid_severity_is_critical(self):
+        c = _base_container(pid_mode="host")
+        risks = evaluate_container_risks(c)
+        pid = [r for r in risks if r.risk_type == "host_pid_mode"][0]
+        assert pid.severity == "CRITICAL"
+
+    def test_host_pid_has_nsenter_command(self):
+        c = _base_container(pid_mode="host")
+        risks = evaluate_container_risks(c)
+        pid = [r for r in risks if r.risk_type == "host_pid_mode"][0]
+        assert any("nsenter" in cmd for cmd in pid.attack_commands)
+
+
+class TestCapabilityDetection:
+    def test_cap_add_sys_admin_detected(self):
+        c = _base_container(capabilities=["CAP_ADD:SYS_ADMIN"])
+        risks = evaluate_container_risks(c)
+        assert any(r.risk_type == "cap_sys_admin" for r in risks)
+
+    def test_cap_drop_sys_admin_not_flagged(self):
+        c = _base_container(capabilities=["CAP_DROP:SYS_ADMIN"])
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type == "cap_sys_admin" for r in risks)
+
+    def test_cap_add_sys_ptrace_detected(self):
+        c = _base_container(capabilities=["CAP_ADD:SYS_PTRACE"])
+        risks = evaluate_container_risks(c)
+        assert any(r.risk_type == "cap_sys_ptrace" for r in risks)
+
+    def test_cap_drop_sys_ptrace_not_flagged(self):
+        c = _base_container(capabilities=["CAP_DROP:SYS_PTRACE"])
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type == "cap_sys_ptrace" for r in risks)
+
+    def test_no_caps_returns_no_cap_risks(self):
+        c = _base_container(capabilities=[])
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type in ("cap_sys_admin", "cap_sys_ptrace") for r in risks)
+
+    def test_sys_admin_severity_is_critical(self):
+        c = _base_container(capabilities=["CAP_ADD:SYS_ADMIN"])
+        risks = evaluate_container_risks(c)
+        cap = [r for r in risks if r.risk_type == "cap_sys_admin"][0]
+        assert cap.severity == "CRITICAL"
+
+    def test_sys_ptrace_severity_is_high(self):
+        c = _base_container(capabilities=["CAP_ADD:SYS_PTRACE"])
+        risks = evaluate_container_risks(c)
+        cap = [r for r in risks if r.risk_type == "cap_sys_ptrace"][0]
+        assert cap.severity == "HIGH"
+
+
+class TestRemovedRiskTypes:
+    """Verify removed risk types no longer generate findings."""
+
+    def test_wide_exposed_port_not_flagged(self):
         c = _base_container(ports={
             "80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"}]
         })
         risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "wide_exposed_port" for r in risks)
-
-    def test_empty_host_ip_detected(self):
-        c = _base_container(ports={
-            "80/tcp": [{"HostIp": "", "HostPort": "80"}]
-        })
-        risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "wide_exposed_port" for r in risks)
-
-    def test_ipv6_wildcard_detected(self):
-        c = _base_container(ports={
-            "80/tcp": [{"HostIp": "::", "HostPort": "80"}]
-        })
-        risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "wide_exposed_port" for r in risks)
-
-    def test_localhost_binding_no_risk(self):
-        c = _base_container(ports={
-            "80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "80"}]
-        })
-        risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "wide_exposed_port" for r in risks)
 
-    def test_no_bindings_no_risk(self):
-        c = _base_container(ports={"80/tcp": None})
+    def test_running_as_root_not_flagged(self):
+        c = _base_container(user="root")
         risks = evaluate_container_risks(c)
-        assert not any(r.risk_type == "wide_exposed_port" for r in risks)
+        assert not any(r.risk_type == "running_as_root" for r in risks)
 
-    def test_multiple_ports_multiple_risks(self):
-        c = _base_container(ports={
-            "80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"}],
-            "443/tcp": [{"HostIp": "0.0.0.0", "HostPort": "443"}],
-        })
-        risks = evaluate_container_risks(c)
-        wide_ports = [r for r in risks if r.risk_type == "wide_exposed_port"]
-        assert len(wide_ports) == 2
-
-
-class TestCapabilityDetection:
-    def test_cap_add_sys_admin_is_critical(self):
-        assert _has_critical_capability(["CAP_ADD:SYS_ADMIN"]) == "SYS_ADMIN"
-
-    def test_cap_drop_sys_admin_not_flagged(self):
-        """CAP_DROP is security-positive and should NOT be flagged."""
-        assert _has_critical_capability(["CAP_DROP:SYS_ADMIN"]) is None
-
-    def test_cap_add_net_admin_is_dangerous(self):
-        assert _has_dangerous_capability(["CAP_ADD:NET_ADMIN"]) == "NET_ADMIN"
-
-    def test_cap_drop_net_admin_not_flagged(self):
-        assert _has_dangerous_capability(["CAP_DROP:NET_ADMIN"]) is None
-
-    def test_mixed_caps_only_adds_flagged(self):
-        caps = ["CAP_DROP:SYS_ADMIN", "CAP_ADD:SYS_PTRACE"]
-        assert _has_critical_capability(caps) is None
-        assert _has_dangerous_capability(caps) == "SYS_PTRACE"
-
-    def test_no_caps_returns_none(self):
-        assert _has_critical_capability([]) is None
-        assert _has_dangerous_capability([]) is None
-
-    def test_critical_cap_generates_risk(self):
-        c = _base_container(capabilities=["CAP_ADD:SYS_ADMIN"])
-        risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "critical_capability" for r in risks)
-
-    def test_dangerous_cap_generates_risk(self):
-        c = _base_container(capabilities=["CAP_ADD:NET_ADMIN"])
-        risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "dangerous_capability" for r in risks)
-
-
-class TestUnpinnedImage:
-    def test_latest_tag_detected(self):
+    def test_unpinned_image_not_flagged(self):
         c = _base_container(image="nginx:latest")
         risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "unpinned_image" for r in risks)
-
-    def test_no_tag_detected(self):
-        c = _base_container(image="nginx")
-        risks = evaluate_container_risks(c)
-        assert any(r.risk_type == "unpinned_image" for r in risks)
-
-    def test_pinned_tag_no_risk(self):
-        c = _base_container(image="nginx:1.25.3")
-        risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "unpinned_image" for r in risks)
+
+    def test_no_resource_limits_not_flagged(self):
+        c = _base_container()
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type == "no_resource_limits" for r in risks)
+
+    def test_net_admin_not_flagged(self):
+        c = _base_container(capabilities=["CAP_ADD:NET_ADMIN"])
+        risks = evaluate_container_risks(c)
+        assert not any(r.risk_type == "dangerous_capability" for r in risks)
+
+
+class TestRootContextNote:
+    """Root status should appear as context in attack explanations, not as standalone risk."""
+
+    def test_root_context_in_privileged_risk(self):
+        c = _base_container(privileged=True, user="root")
+        risks = evaluate_container_risks(c)
+        priv = [r for r in risks if r.risk_type == "privileged_container"][0]
+        assert "runs as root" in priv.attack_explanation
+
+    def test_no_root_context_for_non_root(self):
+        c = _base_container(privileged=True, user="appuser")
+        risks = evaluate_container_risks(c)
+        priv = [r for r in risks if r.risk_type == "privileged_container"][0]
+        assert "runs as root" not in priv.attack_explanation
 
 
 class TestIsDangerousMount:
@@ -248,20 +302,34 @@ class TestIsDangerousMount:
 # ========================================================================
 
 class TestWhitelistFiltering:
+    def _make_risk(self, **overrides) -> Risk:
+        data = dict(
+            container="c",
+            risk_type="privileged_container",
+            severity="CRITICAL",
+            description="test",
+            attack_explanation="test",
+            attack_commands=["test"],
+            remediation="test",
+            details={},
+        )
+        data.update(overrides)
+        return Risk(**data)
+
     def test_empty_whitelist_returns_all(self):
-        risks = [Risk(container="c", risk_type="privileged_container", description="", details={})]
+        risks = [self._make_risk()]
         result = filter_risks_with_whitelist(risks, cfg={})
         assert len(result) == 1
 
     def test_no_config_returns_all(self):
-        risks = [Risk(container="c", risk_type="privileged_container", description="", details={})]
+        risks = [self._make_risk()]
         result = filter_risks_with_whitelist(risks, cfg=None)
         assert len(result) == 1
 
     def test_matching_risk_filtered(self):
         risks = [
-            Risk(container="portainer", risk_type="docker_sock_mount", description="", details={}),
-            Risk(container="portainer", risk_type="privileged_container", description="", details={}),
+            self._make_risk(container="portainer", risk_type="docker_sock_mount"),
+            self._make_risk(container="portainer", risk_type="privileged_container"),
         ]
         cfg = {"whitelist": {"portainer": {"allow": ["docker_sock_mount"]}}}
         result = filter_risks_with_whitelist(risks, cfg=cfg)
@@ -269,64 +337,13 @@ class TestWhitelistFiltering:
         assert result[0].risk_type == "privileged_container"
 
     def test_different_container_not_filtered(self):
-        risks = [
-            Risk(container="nginx", risk_type="docker_sock_mount", description="", details={}),
-        ]
+        risks = [self._make_risk(container="nginx", risk_type="docker_sock_mount")]
         cfg = {"whitelist": {"portainer": {"allow": ["docker_sock_mount"]}}}
         result = filter_risks_with_whitelist(risks, cfg=cfg)
         assert len(result) == 1
 
-    def test_multiple_allowed_types(self):
-        risks = [
-            Risk(container="p", risk_type="docker_sock_mount", description="", details={}),
-            Risk(container="p", risk_type="wide_exposed_port", description="", details={}),
-            Risk(container="p", risk_type="privileged_container", description="", details={}),
-        ]
-        cfg = {"whitelist": {"p": {"allow": ["docker_sock_mount", "wide_exposed_port"]}}}
-        result = filter_risks_with_whitelist(risks, cfg=cfg)
-        assert len(result) == 1
-        assert result[0].risk_type == "privileged_container"
-
     def test_invalid_container_config_not_filtered(self):
-        """If container config is not a dict, skip filtering for that container."""
-        risks = [Risk(container="c", risk_type="privileged_container", description="", details={})]
+        risks = [self._make_risk()]
         cfg = {"whitelist": {"c": "invalid"}}
         result = filter_risks_with_whitelist(risks, cfg=cfg)
         assert len(result) == 1
-
-
-# ========================================================================
-# Risk severity
-# ========================================================================
-
-class TestRiskSeverity:
-    def test_critical_types(self):
-        assert get_risk_severity("docker_sock_mount") == "CRITICAL"
-        assert get_risk_severity("privileged_container") == "CRITICAL"
-        assert get_risk_severity("critical_capability") == "CRITICAL"
-
-    def test_high_types(self):
-        assert get_risk_severity("dangerous_host_mount") == "HIGH"
-        assert get_risk_severity("host_network_mode") == "HIGH"
-
-    def test_medium_types(self):
-        assert get_risk_severity("wide_exposed_port") == "MEDIUM"
-
-    def test_unknown_type_is_low(self):
-        assert get_risk_severity("some_unknown_risk") == "LOW"
-
-
-# ========================================================================
-# Remediation advice
-# ========================================================================
-
-class TestRemediationAdvice:
-    def test_known_risk_gets_specific_advice(self):
-        risk = Risk(container="c", risk_type="privileged_container", description="", details={})
-        advice = get_remediation_advice(risk)
-        assert "--privileged" in advice
-
-    def test_unknown_risk_gets_generic_advice(self):
-        risk = Risk(container="c", risk_type="unknown_risk", description="", details={})
-        advice = get_remediation_advice(risk)
-        assert "least privilege" in advice
