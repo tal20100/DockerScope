@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from dockerscope.models.container import ContainerInfo
+
 from .docker_client import list_containers
 
 

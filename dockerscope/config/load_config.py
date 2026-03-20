@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-
 DEFAULT_CONFIG_PATH = Path(os.path.expanduser("~")) / ".dockerscope" / "config.yaml"
 
 

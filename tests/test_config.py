@@ -1,7 +1,6 @@
 """Tests for configuration loading."""
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 from dockerscope.config.load_config import load_config

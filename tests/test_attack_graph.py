@@ -1,12 +1,8 @@
-"""Comprehensive tests for attack graph construction, path finding, and export."""
+"""Tests for attack graph construction, path finding, and export."""
 from __future__ import annotations
 
 import json
 
-import pytest
-
-from dockerscope.models.container import ContainerInfo
-from dockerscope.models.risk import Risk
 from dockerscope.attack.attack_graph import (
     AttackPath,
     build_attack_graph,
@@ -15,9 +11,10 @@ from dockerscope.attack.attack_graph import (
     export_graph_to_dict,
     export_graph_to_dot,
     sanitize_graph_for_json,
-    _is_sensitive_path,
-    _calculate_volume_risk_score,
 )
+from dockerscope.core.risks import evaluate_container_risks
+from dockerscope.models.container import ContainerInfo
+from dockerscope.models.risk import Risk
 
 
 def _container(name: str = "test", **overrides) -> ContainerInfo:
@@ -36,60 +33,19 @@ def _container(name: str = "test", **overrides) -> ContainerInfo:
     return ContainerInfo(**data)
 
 
-# ========================================================================
-# _is_sensitive_path (regression tests for "/" bug)
-# ========================================================================
-
-class TestIsSensitivePath:
-    def test_root_is_sensitive(self):
-        assert _is_sensitive_path("/") is True
-
-    def test_etc_is_sensitive(self):
-        assert _is_sensitive_path("/etc") is True
-
-    def test_etc_subpath_is_sensitive(self):
-        assert _is_sensitive_path("/etc/ssh") is True
-
-    def test_user_data_not_sensitive(self):
-        assert _is_sensitive_path("/home/user/data") is False
-
-    def test_app_data_not_sensitive(self):
-        """Regression: before fix, every path was sensitive due to '/' rstrip bug."""
-        assert _is_sensitive_path("/app/data") is False
-
-    def test_var_log_sensitive(self):
-        assert _is_sensitive_path("/var/log") is True
-
-    def test_var_log_subpath_sensitive(self):
-        assert _is_sensitive_path("/var/log/syslog") is True
-
-    def test_var_lib_docker_sensitive(self):
-        assert _is_sensitive_path("/var/lib/docker") is True
-
-    def test_var_lib_other_not_sensitive(self):
-        assert _is_sensitive_path("/var/lib/myapp") is False
-
-
-# ========================================================================
-# _calculate_volume_risk_score (regression tests for "/" bug)
-# ========================================================================
-
-class TestCalculateVolumeRiskScore:
-    def test_root_gets_critical_score(self):
-        assert _calculate_volume_risk_score("/") == 60  # 20 + 40
-
-    def test_etc_gets_critical_score(self):
-        assert _calculate_volume_risk_score("/etc") == 60
-
-    def test_usr_bin_gets_high_score(self):
-        assert _calculate_volume_risk_score("/usr/bin") == 45  # 20 + 25
-
-    def test_safe_path_gets_base_score(self):
-        """Regression: before fix, every path got +40 due to '/' rstrip bug."""
-        assert _calculate_volume_risk_score("/app/data") == 20
-
-    def test_home_path_gets_base_score(self):
-        assert _calculate_volume_risk_score("/home/user") == 20
+def _risk(container: str = "test", risk_type: str = "privileged_container", **overrides) -> Risk:
+    data = dict(
+        container=container,
+        risk_type=risk_type,
+        severity="CRITICAL",
+        description="test",
+        attack_explanation="test",
+        attack_commands=["test"],
+        remediation="test",
+        details={},
+    )
+    data.update(overrides)
+    return Risk(**data)
 
 
 # ========================================================================
@@ -102,6 +58,11 @@ class TestBuildAttackGraph:
         assert "host_root" in g.nodes
         assert "docker_daemon" in g.nodes
         assert "docker.sock" in g.nodes
+
+    def test_no_host_network_ns_node(self):
+        """host_network_ns was removed — it is not an escape target."""
+        g = build_attack_graph([], [])
+        assert "host_network_ns" not in g.nodes
 
     def test_daemon_to_host_edge(self):
         g = build_attack_graph([], [])
@@ -119,50 +80,56 @@ class TestBuildAttackGraph:
 
     def test_docker_sock_risk_creates_edge_to_socket(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         assert g.has_edge("web", "docker.sock")
 
     def test_privileged_risk_creates_edge_to_host(self):
         c = _container("web", privileged=True)
-        risk = Risk(container="web", risk_type="privileged_container", description="", details={})
+        risk = _risk("web", "privileged_container")
         g = build_attack_graph([c], [risk])
         assert g.has_edge("web", "host_root")
 
-    def test_dangerous_mount_risk_creates_volume_edges(self):
+    def test_dangerous_mount_creates_direct_edge_to_host(self):
+        """Writable mounts now create a direct edge to host_root (no volume intermediary)."""
         c = _container("web")
-        risk = Risk(
-            container="web",
-            risk_type="dangerous_host_mount",
-            description="",
-            details={"source": "/etc"},
-        )
-        g = build_attack_graph([c], [risk])
-        assert g.has_edge("web", "volume:/etc")
-        assert g.has_edge("volume:/etc", "host_root")
-
-    def test_host_network_risk_creates_edge_to_host(self):
-        c = _container("web", network_mode="host")
-        risk = Risk(container="web", risk_type="host_network_mode", description="", details={})
+        risk = _risk("web", "dangerous_host_mount", details={"source": "/etc"})
         g = build_attack_graph([c], [risk])
         assert g.has_edge("web", "host_root")
 
-    def test_shared_network_creates_lateral_edges(self):
+    def test_host_network_does_not_create_escape_edge(self):
+        """host_network_mode is lateral capability, not an escape vector."""
+        c = _container("web", network_mode="host")
+        risk = _risk("web", "host_network_mode", severity="HIGH")
+        g = build_attack_graph([c], [risk])
+        assert not g.has_edge("web", "host_root")
+
+    def test_host_pid_creates_edge_to_host(self):
+        c = _container("web", pid_mode="host")
+        risk = _risk("web", "host_pid_mode")
+        g = build_attack_graph([c], [risk])
+        assert g.has_edge("web", "host_root")
+
+    def test_cap_sys_admin_creates_edge_to_host(self):
+        c = _container("web", capabilities=["CAP_ADD:SYS_ADMIN"])
+        risk = _risk("web", "cap_sys_admin")
+        g = build_attack_graph([c], [risk])
+        assert g.has_edge("web", "host_root")
+
+    def test_no_network_lateral_edges(self):
+        """Network lateral edges were removed — normal Docker networking is not an attack."""
         c1 = _container("web", network_mode="bridge")
         c2 = _container("api", network_mode="bridge")
         g = build_attack_graph([c1, c2], [])
-        assert g.has_edge("web", "api")
-        assert g.has_edge("api", "web")
+        assert not g.has_edge("web", "api")
+        assert not g.has_edge("api", "web")
 
-    def test_shared_volume_creates_edges(self):
+    def test_no_shared_volume_edges(self):
+        """Shared volume edges were removed — data access is not container escape."""
         c1 = _container("web", mounts=[{"Source": "/data", "Destination": "/app"}])
         c2 = _container("api", mounts=[{"Source": "/data", "Destination": "/app"}])
         g = build_attack_graph([c1, c2], [])
-        # Shared volume between 2 containers should create edges
-        assert "volume:/data" in g.nodes or not g.has_node("volume:/data")
-        # Volume nodes are only added for shared OR sensitive paths
-        # /data is not sensitive, but shared between 2 containers
-        # The volume node addition happens on second pass when volume_usage count > 1
+        assert "volume:/data" not in g.nodes
 
 
 # ========================================================================
@@ -172,15 +139,14 @@ class TestBuildAttackGraph:
 class TestExplainAttackPaths:
     def test_docker_sock_path_to_host(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         paths = explain_attack_paths(g, "web")
-        # Should find path: web -> docker.sock -> docker_daemon -> host_root
         assert any("host_root" in p.nodes for p in paths)
 
     def test_privileged_direct_path(self):
         c = _container("web", privileged=True)
-        risk = Risk(container="web", risk_type="privileged_container", description="", details={})
+        risk = _risk("web", "privileged_container")
         g = build_attack_graph([c], [risk])
         paths = explain_attack_paths(g, "web")
         assert any(p.nodes == ["web", "host_root"] for p in paths)
@@ -199,8 +165,8 @@ class TestExplainAttackPaths:
     def test_paths_sorted_by_risk_score(self):
         c = _container("web", privileged=True)
         risks = [
-            Risk(container="web", risk_type="privileged_container", description="", details={}),
-            Risk(container="web", risk_type="docker_sock_mount", description="", details={}),
+            _risk("web", "privileged_container"),
+            _risk("web", "docker_sock_mount"),
         ]
         g = build_attack_graph([c], risks)
         paths = explain_attack_paths(g, "web")
@@ -210,8 +176,8 @@ class TestExplainAttackPaths:
     def test_max_paths_respected(self):
         c = _container("web", privileged=True)
         risks = [
-            Risk(container="web", risk_type="privileged_container", description="", details={}),
-            Risk(container="web", risk_type="docker_sock_mount", description="", details={}),
+            _risk("web", "privileged_container"),
+            _risk("web", "docker_sock_mount"),
         ]
         g = build_attack_graph([c], risks)
         paths = explain_attack_paths(g, "web", max_paths=1)
@@ -219,7 +185,7 @@ class TestExplainAttackPaths:
 
     def test_attack_path_has_techniques(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         paths = explain_attack_paths(g, "web")
         assert len(paths) > 0
@@ -227,11 +193,28 @@ class TestExplainAttackPaths:
 
     def test_attack_path_has_remediation(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         paths = explain_attack_paths(g, "web")
         assert len(paths) > 0
         assert paths[0].remediation != ""
+
+    def test_host_network_no_escape_path(self):
+        """host_network_mode alone should NOT create any escape path."""
+        c = _container("web", network_mode="host")
+        risk = _risk("web", "host_network_mode", severity="HIGH")
+        g = build_attack_graph([c], [risk])
+        paths = explain_attack_paths(g, "web")
+        assert len(paths) == 0
+
+    def test_container_with_no_own_risk_no_path(self):
+        """A safe container should not reach host_root even if other containers have risks."""
+        safe = _container("safe")
+        danger = _container("danger", privileged=True)
+        risk = _risk("danger", "privileged_container")
+        g = build_attack_graph([safe, danger], [risk])
+        paths = explain_attack_paths(g, "safe")
+        assert len(paths) == 0
 
 
 # ========================================================================
@@ -263,19 +246,18 @@ class TestBuildAttackTree:
 class TestExportJson:
     def test_export_to_dict(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         data = export_graph_to_dict(g)
         assert "nodes" in data or "links" in data
 
     def test_sanitize_makes_json_serializable(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         data = export_graph_to_dict(g)
         sanitized = sanitize_graph_for_json(data)
-        # Should not raise
-        json.dumps(sanitized)
+        json.dumps(sanitized)  # Should not raise
 
     def test_sanitize_handles_nested_objects(self):
         data = {"key": {"nested": [1, 2, {"deep": True}]}}
@@ -286,7 +268,7 @@ class TestExportJson:
 class TestExportDot:
     def test_export_to_dot(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         dot = export_graph_to_dot(g)
         assert "digraph AttackGraph" in dot
@@ -295,7 +277,7 @@ class TestExportDot:
 
     def test_dot_has_edges(self):
         c = _container("web")
-        risk = Risk(container="web", risk_type="docker_sock_mount", description="", details={})
+        risk = _risk("web", "docker_sock_mount")
         g = build_attack_graph([c], [risk])
         dot = export_graph_to_dot(g)
         assert "->" in dot
@@ -305,3 +287,39 @@ class TestExportDot:
         dot = export_graph_to_dot(g)
         assert "fillcolor=red" in dot  # host_root
         assert "fillcolor=orange" in dot  # docker_daemon
+
+
+# ========================================================================
+# Integration with real risk evaluation
+# ========================================================================
+
+class TestIntegration:
+    def test_privileged_container_has_path_to_host(self):
+        c = _container("priv", privileged=True)
+        risks = evaluate_container_risks(c)
+        g = build_attack_graph([c], risks)
+        paths = explain_attack_paths(g, "priv")
+        assert any("host_root" in p.nodes for p in paths)
+
+    def test_sock_mount_has_path_to_daemon(self):
+        c = _container("sock", mounts=[
+            {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}
+        ])
+        risks = evaluate_container_risks(c)
+        g = build_attack_graph([c], risks)
+        paths = explain_attack_paths(g, "sock")
+        assert any("docker_daemon" in p.nodes for p in paths)
+
+    def test_safe_container_no_path_to_host(self):
+        c = _container("safe")
+        risks = evaluate_container_risks(c)
+        g = build_attack_graph([c], risks)
+        paths = explain_attack_paths(g, "safe")
+        assert len(paths) == 0
+
+    def test_risk_score_bounded_0_to_100(self):
+        c = _container("all", privileged=True, capabilities=["CAP_ADD:SYS_ADMIN"])
+        risks = evaluate_container_risks(c)
+        g = build_attack_graph([c], risks)
+        score = g.nodes["all"].get("risk_score", 0)
+        assert 0 <= score <= 100
