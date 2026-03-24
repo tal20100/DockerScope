@@ -1,4 +1,5 @@
 """Tests for CLI commands using typer's CliRunner."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -37,6 +38,7 @@ def _mock_container(
 # ========================================================================
 # topology
 # ========================================================================
+
 
 class TestTopology:
     @patch("dockerscope.cli.discover_containers")
@@ -110,6 +112,7 @@ class TestTopology:
 # scan
 # ========================================================================
 
+
 class TestScan:
     @patch("dockerscope.cli.discover_containers")
     def test_scan_all_containers(self, mock_discover):
@@ -169,6 +172,7 @@ class TestScan:
 # scan --export
 # ========================================================================
 
+
 class TestScanExport:
     @patch("dockerscope.cli.discover_containers")
     def test_export_json(self, mock_discover):
@@ -203,6 +207,7 @@ class TestScanExport:
 # scan-compose
 # ========================================================================
 
+
 class TestScanCompose:
     def test_scan_compose_file_not_found(self):
         result = runner.invoke(app, ["scan-compose", "/nonexistent/docker-compose.yml"])
@@ -211,35 +216,20 @@ class TestScanCompose:
 
     def test_scan_compose_safe_file(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  web:\n"
-            "    image: nginx:1.25\n"
-        )
+        compose.write_text("services:\n  web:\n    image: nginx:1.25\n")
         result = runner.invoke(app, ["scan-compose", str(compose)])
         assert result.exit_code == 0
         assert "No dangerous" in result.output or "no issues" in result.output.lower()
 
     def test_scan_compose_critical_exits_1(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  danger:\n"
-            "    image: alpine:3.19\n"
-            "    privileged: true\n"
-        )
+        compose.write_text("services:\n  danger:\n    image: alpine:3.19\n    privileged: true\n")
         result = runner.invoke(app, ["scan-compose", str(compose)])
         assert result.exit_code == 1
         assert "Do not deploy" in result.output
 
     def test_scan_compose_shows_service_count(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  web:\n"
-            "    image: nginx:1.25\n"
-            "  api:\n"
-            "    image: node:20\n"
-        )
+        compose.write_text("services:\n  web:\n    image: nginx:1.25\n  api:\n    image: node:20\n")
         result = runner.invoke(app, ["scan-compose", str(compose)])
         assert "2" in result.output

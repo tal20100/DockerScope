@@ -29,7 +29,6 @@ dev = [
   "mypy>=1.10.0",
   "build>=1.4.0",
   "types-PyYAML>=6.0",
-  "types-docker>=7.0",
 ]
 
 [build-system]

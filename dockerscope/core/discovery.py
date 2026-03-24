@@ -35,7 +35,9 @@ def _extract_container_info(container: Any) -> ContainerInfo:
     return ContainerInfo(
         id=inspect.get("Id", container.id),
         name=inspect.get("Name", container.name).lstrip("/"),
-        image=config.get("Image", getattr(container.image, "tags", [None])[0] or "unknown"),
+        image=config.get(
+            "Image", (getattr(container.image, "tags", None) or [None])[0] or "unknown"
+        ),
         privileged=privileged,
         network_mode=network_mode,
         status=status,

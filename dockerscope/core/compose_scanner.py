@@ -32,8 +32,7 @@ def scan_compose_file(path: str) -> list[tuple[str, list[Risk]]]:
     filepath = Path(path)
     if not filepath.exists():
         raise FileNotFoundError(
-            f"Compose file not found: {filepath}. "
-            f"Check the path and try again."
+            f"Compose file not found: {filepath}. Check the path and try again."
         )
 
     raw = filepath.read_text(encoding="utf-8")

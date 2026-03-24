@@ -13,6 +13,8 @@ Detection categories:
 
 from __future__ import annotations
 
+from typing import Optional  # noqa: UP035
+
 from dockerscope.config.load_config import load_config
 from dockerscope.core.discovery import ContainerInfo
 from dockerscope.models.risk import Risk
@@ -332,7 +334,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
     return risks
 
 
-def filter_risks_with_whitelist(risks: list[Risk], cfg: dict | None = None) -> list[Risk]:
+def filter_risks_with_whitelist(risks: list[Risk], cfg: Optional[dict] = None) -> list[Risk]:
     """
     Filter risks based on whitelist configuration.
 
