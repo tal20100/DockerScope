@@ -1,6 +1,6 @@
 [project]
 name = "dockerscope"
-version = "0.1.0"
+version = "0.1.1"
 description = "Analyze Docker environments for real security risks and attack paths."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,9 @@ dev = [
   "pytest-mock>=3.14.0",
   "ruff>=0.4.0",
   "mypy>=1.10.0",
+  "build>=1.4.0",
+  "types-PyYAML>=6.0",
+  "types-docker>=7.0",
 ]
 
 [build-system]
@@ -40,6 +43,12 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
