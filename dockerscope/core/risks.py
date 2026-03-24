@@ -13,7 +13,7 @@ Detection categories:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional # noqa: UP035
 
 from dockerscope.config.load_config import load_config
 from dockerscope.core.discovery import ContainerInfo
