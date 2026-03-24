@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 import networkx as nx
 from rich.tree import Tree
@@ -350,7 +350,7 @@ def build_attack_tree(paths: list[AttackPath], container_name: str) -> Tree:
     return root
 
 
-def export_graph_to_dict(graph: nx.DiGraph) -> dict:
+def export_graph_to_dict(graph: nx.DiGraph) -> Any:
     """Export attack graph to dictionary for JSON serialization."""
     from networkx.readwrite import json_graph
     return json_graph.node_link_data(graph)
