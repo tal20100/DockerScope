@@ -1,4 +1,5 @@
 """Tests for attack graph construction, path finding, and export."""
+
 from __future__ import annotations
 
 import json
@@ -51,6 +52,7 @@ def _risk(container: str = "test", risk_type: str = "privileged_container", **ov
 # ========================================================================
 # Graph construction
 # ========================================================================
+
 
 class TestBuildAttackGraph:
     def test_base_nodes_always_present(self):
@@ -135,6 +137,7 @@ class TestBuildAttackGraph:
 # ========================================================================
 # Attack path finding
 # ========================================================================
+
 
 class TestExplainAttackPaths:
     def test_docker_sock_path_to_host(self):
@@ -221,6 +224,7 @@ class TestExplainAttackPaths:
 # Attack tree visualization
 # ========================================================================
 
+
 class TestBuildAttackTree:
     def test_empty_paths(self):
         tree = build_attack_tree([], "web")
@@ -242,6 +246,7 @@ class TestBuildAttackTree:
 # ========================================================================
 # Export
 # ========================================================================
+
 
 class TestExportJson:
     def test_export_to_dict(self):
@@ -293,6 +298,7 @@ class TestExportDot:
 # Integration with real risk evaluation
 # ========================================================================
 
+
 class TestIntegration:
     def test_privileged_container_has_path_to_host(self):
         c = _container("priv", privileged=True)
@@ -302,9 +308,10 @@ class TestIntegration:
         assert any("host_root" in p.nodes for p in paths)
 
     def test_sock_mount_has_path_to_daemon(self):
-        c = _container("sock", mounts=[
-            {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}
-        ])
+        c = _container(
+            "sock",
+            mounts=[{"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}],
+        )
         risks = evaluate_container_risks(c)
         g = build_attack_graph([c], risks)
         paths = explain_attack_paths(g, "sock")
