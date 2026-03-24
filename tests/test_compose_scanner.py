@@ -10,12 +10,7 @@ from dockerscope.core.compose_scanner import scan_compose_file
 class TestComposeScanner:
     def test_parses_privileged_service(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  danger:\n"
-            "    image: alpine:3.19\n"
-            "    privileged: true\n"
-        )
+        compose.write_text("services:\n  danger:\n    image: alpine:3.19\n    privileged: true\n")
         results = scan_compose_file(str(compose))
         assert len(results) == 1
         name, risks = results[0]
@@ -37,11 +32,7 @@ class TestComposeScanner:
 
     def test_safe_service_returns_empty_risks(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  safe:\n"
-            "    image: alpine:3.19\n"
-        )
+        compose.write_text("services:\n  safe:\n    image: alpine:3.19\n")
         results = scan_compose_file(str(compose))
         _, risks = results[0]
         assert len(risks) == 0
@@ -77,12 +68,7 @@ class TestComposeScanner:
 
     def test_build_only_service_is_scanned(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  app:\n"
-            "    build: ./app\n"
-            "    privileged: true\n"
-        )
+        compose.write_text("services:\n  app:\n    build: ./app\n    privileged: true\n")
         results = scan_compose_file(str(compose))
         assert len(results) == 1
         _, risks = results[0]
@@ -90,12 +76,7 @@ class TestComposeScanner:
 
     def test_host_network_mode_detected(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  app:\n"
-            "    image: alpine:3.19\n"
-            "    network_mode: host\n"
-        )
+        compose.write_text("services:\n  app:\n    image: alpine:3.19\n    network_mode: host\n")
         results = scan_compose_file(str(compose))
         _, risks = results[0]
         assert any(r.risk_type == "host_network_mode" for r in risks)
@@ -103,11 +84,7 @@ class TestComposeScanner:
     def test_cap_add_sys_admin_parsed(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
         compose.write_text(
-            "services:\n"
-            "  app:\n"
-            "    image: alpine:3.19\n"
-            "    cap_add:\n"
-            "      - SYS_ADMIN\n"
+            "services:\n  app:\n    image: alpine:3.19\n    cap_add:\n      - SYS_ADMIN\n"
         )
         results = scan_compose_file(str(compose))
         _, risks = results[0]
@@ -115,12 +92,7 @@ class TestComposeScanner:
 
     def test_pid_host_detected(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
-        compose.write_text(
-            "services:\n"
-            "  app:\n"
-            "    image: alpine:3.19\n"
-            "    pid: host\n"
-        )
+        compose.write_text("services:\n  app:\n    image: alpine:3.19\n    pid: host\n")
         results = scan_compose_file(str(compose))
         _, risks = results[0]
         assert any(r.risk_type == "host_pid_mode" for r in risks)
@@ -144,11 +116,7 @@ class TestComposeScanner:
         """Ports are no longer flagged as risks — they are not attacks from inside the container."""
         compose = tmp_path / "docker-compose.yml"
         compose.write_text(
-            "services:\n"
-            "  web:\n"
-            "    image: nginx:1.25\n"
-            "    ports:\n"
-            '      - "8080:80"\n'
+            'services:\n  web:\n    image: nginx:1.25\n    ports:\n      - "8080:80"\n'
         )
         results = scan_compose_file(str(compose))
         _, risks = results[0]
@@ -157,11 +125,7 @@ class TestComposeScanner:
     def test_writable_dangerous_mount_detected(self, tmp_path):
         compose = tmp_path / "docker-compose.yml"
         compose.write_text(
-            "services:\n"
-            "  app:\n"
-            "    image: alpine:3.19\n"
-            "    volumes:\n"
-            "      - /etc:/mnt/etc\n"
+            "services:\n  app:\n    image: alpine:3.19\n    volumes:\n      - /etc:/mnt/etc\n"
         )
         results = scan_compose_file(str(compose))
         _, risks = results[0]

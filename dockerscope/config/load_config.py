@@ -27,4 +27,3 @@ def load_config(path: Optional[os.PathLike[str] | str] = None) -> Optional[Dict[
     except Exception:
         # On parse or IO errors, fall back to no config rather than crashing
         return None
-

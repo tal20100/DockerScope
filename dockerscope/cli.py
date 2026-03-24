@@ -37,7 +37,7 @@ from dockerscope.core.risks import (
 
 app = typer.Typer(
     help="DockerScope - If someone got into one of your containers, what could they do from there?",
-    add_completion=False
+    add_completion=False,
 )
 console = Console()
 
@@ -45,21 +45,20 @@ console = Console()
 def _print_risks(risks: list[Risk]) -> None:
     """Display risks with attack explanations and remediation."""
     if not risks:
-        console.print(Panel(
-            "[green]No risks detected.[/green]",
-            title="Security Status",
-            border_style="green"
-        ))
+        console.print(
+            Panel(
+                "[green]No risks detected.[/green]", title="Security Status", border_style="green"
+            )
+        )
         return
 
     critical = [r for r in risks if r.severity == "CRITICAL"]
     high = [r for r in risks if r.severity == "HIGH"]
 
-    summary = (
-        f"[red]Critical: {len(critical)}[/red]  "
-        f"[yellow]High: {len(high)}[/yellow]"
+    summary = f"[red]Critical: {len(critical)}[/red]  [yellow]High: {len(high)}[/yellow]"
+    console.print(
+        Panel(summary, title="Risk Summary", border_style="red" if critical else "yellow")
     )
-    console.print(Panel(summary, title="Risk Summary", border_style="red" if critical else "yellow"))
 
     sorted_risks = critical + high
 
@@ -135,8 +134,10 @@ def _security_flags(container: ContainerInfo) -> str:
     for m in container.mounts:
         src = m.get("Source") or m.get("src") or ""
         dst = m.get("Destination") or m.get("dst") or ""
-        if src in ("/var/run/docker.sock", "/run/docker.sock") or \
-           dst in ("/var/run/docker.sock", "/run/docker.sock"):
+        if src in ("/var/run/docker.sock", "/run/docker.sock") or dst in (
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+        ):
             flags.append("[red]SOCK[/red]")
             break
     if container.network_mode == "host":
@@ -179,13 +180,15 @@ def topology() -> None:
     running = [c for c in containers if c.status == "running"]
     stopped = [c for c in containers if c.status != "running"]
 
-    console.print(Panel(
-        f"[bold]{len(containers)}[/bold] container(s)  "
-        f"[green]{len(running)} running[/green]  "
-        f"[dim]{len(stopped)} stopped[/dim]",
-        title="Docker Topology",
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            f"[bold]{len(containers)}[/bold] container(s)  "
+            f"[green]{len(running)} running[/green]  "
+            f"[dim]{len(stopped)} stopped[/dim]",
+            title="Docker Topology",
+            border_style="blue",
+        )
+    )
 
     table = Table(show_lines=True, box=box.ROUNDED)
     table.add_column("Container", style="cyan", no_wrap=True)
@@ -224,20 +227,13 @@ def topology() -> None:
 @app.command()
 def scan(
     container: Optional[str] = typer.Argument(
-        None,
-        help="Container name/ID to scan (scans all if omitted)"
+        None, help="Container name/ID to scan (scans all if omitted)"
     ),
     export: Optional[str] = typer.Option(
-        None,
-        "--export",
-        "-e",
-        help="Export attack graph: json or dot"
+        None, "--export", "-e", help="Export attack graph: json or dot"
     ),
     output: Optional[str] = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Output file path for export (stdout if omitted)"
+        None, "--output", "-o", help="Output file path for export (stdout if omitted)"
     ),
 ) -> None:
     """
@@ -312,10 +308,12 @@ def scan(
         console.print(f"[bold]{'=' * 60}[/bold]")
 
         if not container_risks and not paths:
-            console.print(Panel(
-                "[green]No risks detected. This container is well-configured.[/green]",
-                border_style="green"
-            ))
+            console.print(
+                Panel(
+                    "[green]No risks detected. This container is well-configured.[/green]",
+                    border_style="green",
+                )
+            )
             continue
 
         # Show risks
@@ -327,7 +325,7 @@ def scan(
             table = Table(
                 title=f"[bold red]Escape Paths: {len(paths)}[/bold red]",
                 show_lines=True,
-                box=box.DOUBLE_EDGE
+                box=box.DOUBLE_EDGE,
             )
             table.add_column("#", style="bold", width=3, justify="right")
             table.add_column("Risk", style="red", width=7, justify="center")
@@ -336,10 +334,7 @@ def scan(
 
             for idx, p in enumerate(paths, start=1):
                 table.add_row(
-                    str(idx),
-                    f"{int(p.risk_score * 100)}%",
-                    p.description,
-                    str(len(p.nodes) - 1)
+                    str(idx), f"{int(p.risk_score * 100)}%", p.description, str(len(p.nodes) - 1)
                 )
 
             console.print(table)
@@ -351,9 +346,7 @@ def scan(
 
 
 @app.command("scan-compose")
-def scan_compose(
-    file: str = typer.Argument(..., help="Path to docker-compose.yml file")
-) -> None:
+def scan_compose(file: str = typer.Argument(..., help="Path to docker-compose.yml file")) -> None:
     """
     Scan a docker-compose file for security risks before deployment.
 
@@ -373,11 +366,13 @@ def scan_compose(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
-    console.print(Panel(
-        f"[bold]Scanning:[/bold] [cyan]{file}[/cyan] - "
-        f"[bold]{len(results)}[/bold] service(s) found",
-        border_style="blue"
-    ))
+    console.print(
+        Panel(
+            f"[bold]Scanning:[/bold] [cyan]{file}[/cyan] - "
+            f"[bold]{len(results)}[/bold] service(s) found",
+            border_style="blue",
+        )
+    )
 
     total_critical = 0
     total_high = 0
@@ -398,10 +393,7 @@ def scan_compose(
                 total_high += 1
 
     # Summary
-    summary = (
-        f"[red]Critical: {total_critical}[/red]  "
-        f"[yellow]High: {total_high}[/yellow]"
-    )
+    summary = f"[red]Critical: {total_critical}[/red]  [yellow]High: {total_high}[/yellow]"
 
     if total_critical > 0:
         verdict = "[red]Do not deploy without fixing critical issues[/red]"
@@ -410,11 +402,13 @@ def scan_compose(
     else:
         verdict = "[green]No dangerous configurations found[/green]"
 
-    console.print(Panel(
-        f"{summary}\n\n{verdict}",
-        title="Summary",
-        border_style="red" if total_critical > 0 else ("yellow" if total_high > 0 else "green"),
-    ))
+    console.print(
+        Panel(
+            f"{summary}\n\n{verdict}",
+            title="Summary",
+            border_style="red" if total_critical > 0 else ("yellow" if total_high > 0 else "green"),
+        )
+    )
 
     if has_critical:
         raise typer.Exit(code=1)
