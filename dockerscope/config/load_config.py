@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
 
 DEFAULT_CONFIG_PATH = Path(os.path.expanduser("~")) / ".dockerscope" / "config.yaml"
 
 
-def load_config(path: Optional[os.PathLike[str] | str] = None) -> Optional[Dict[str, Any]]:
+def load_config(path: os.PathLike[str] | str | None = None) -> dict[str, Any] | None:
     """
     Load the YAML configuration file if it exists.
 
