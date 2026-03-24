@@ -17,21 +17,6 @@ class ContainerInfo:
     mounts: list[dict[str, Any]] = field(default_factory=list)
     ports: dict[str, Any] = field(default_factory=dict)
     capabilities: list[str] = field(default_factory=list)
-
-@dataclass
-class PublishedPortInfo:
-    container_port: str
-    host_ip: str
-    host_port: str
-    reachable_from_lan: bool
-    reachable_from_internet: bool
-
-@dataclass
-class ContainerReachability:
-    container_name: str
-    network_mode: str
-    published_ports: list[PublishedPortInfo]
-    can_reach_host: bool
-    can_reach_lan: bool
-    can_reach_internet: bool
-    notes: list[str]
+    pid_mode: str | None = None
+    user: str | None = None
+    security_opt: list[str] | None = None
