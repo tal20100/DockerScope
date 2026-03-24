@@ -1,237 +1,246 @@
-## DockerScope
+# DockerScope
 
-**DockerScope** is a CLI tool that analyzes Docker runtime environments on Linux hosts, identifies real security risks, and models practical attack paths an attacker could take from a compromised container.
+> Find out what an attacker could do if they got into your Docker containers.
 
-The primary question DockerScope tries to answer is:
+## Real-World Use Case
 
-> *“If a container becomes compromised, what could an attacker actually reach or escalate to?”*
+You're a DevOps engineer or a homelabber running self-hosted services — Jellyfin, Nextcloud, Home Assistant, Grafana. You pulled docker-compose files from GitHub or a blog post, ran `docker compose up`, and everything works. But those files often include `privileged: true`, Docker socket mounts, or `network_mode: host` without explaining the security implications.
 
-It focuses on **runtime Docker environments** rather than image scanning, and is designed to be safe to run on production hosts in read-only mode.
+Tools like **Trivy** and **Snyk** scan container *images* for known CVEs — outdated packages, vulnerable libraries. That's important, but it misses a completely different class of risk: **what happens after an attacker gets code execution inside a container?** A container with zero CVEs but `privileged: true` can escape to your host in seconds.
 
----
+**DockerScope** fills that gap. It analyzes your running Docker environment (or your compose files before deployment) and models real attack paths — privilege escalation, host escape through misconfigurations, and Docker daemon takeover. It tells you exactly what's dangerous, shows the commands an attacker would run, and tells you how to fix it.
+
+## What it detects
+
+| Risk | Severity | What it means | Real-world example |
+|------|----------|---------------|-------------------|
+| Docker socket mount | CRITICAL | Container can control the Docker daemon | Container with `/var/run/docker.sock` — attacker creates a new privileged container |
+| Privileged mode | CRITICAL | Container has near-root access to host | `privileged: true` — attacker uses `nsenter` to get a host shell |
+| SYS_ADMIN capability | CRITICAL | Can mount host filesystems | `cap_add: [SYS_ADMIN]` — attacker mounts host disk |
+| Host PID namespace | CRITICAL | Container sees all host processes | `pid: host` — attacker uses `nsenter` to get host shell |
+| Dangerous host mounts | CRITICAL | Sensitive host paths writable from container | `/etc` mounted writable — attacker modifies `/etc/shadow` |
+| Host network mode | HIGH | Container shares the host network stack | Can sniff traffic, bind to any host port, access localhost services |
+| SYS_PTRACE capability | HIGH | Can trace and inject into other processes | Combined with host PID, enables host process injection |
+
+> **Note on `nsenter`:** When a container runs with `privileged: true` and shares the host PID namespace, `nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash` gives the attacker a full root shell on the host. The command targets PID 1 (the host's init process) and enters its namespaces — effectively leaving the container entirely. This is not a theoretical risk; it's one command from container to host root.
+
+## Quick start
+
+```bash
+# Install via pip
+pip install dockerscope
+
+# See what containers you have
+dockerscope topology
+
+# Scan everything for risks and attack paths
+dockerscope scan
+
+# Scan a specific container
+dockerscope scan jellyfin
+
+# Scan a compose file BEFORE deploying (no Docker needed)
+dockerscope scan-compose docker-compose.yml
+```
 
 ## Installation
 
-DockerScope targets **Python 3.11+** and Linux hosts with Docker.
-
-1. Clone the repository:
+### pip (recommended)
 
 ```bash
-git clone https://github.com/your-user/dockerscope.git
-cd dockerscope
+pip install dockerscope
 ```
 
-2. Install in editable mode:
+### Docker
+
+Run DockerScope itself in a container. It needs access to the Docker socket to inspect other containers:
 
 ```bash
-pip install -e .
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock dockerscope scan
 ```
 
-3. Verify the CLI:
+To scan a compose file:
 
 ```bash
-dockerscope --help
+docker run --rm -v ./docker-compose.yml:/app/docker-compose.yml dockerscope scan-compose /app/docker-compose.yml
 ```
 
----
-
-## CLI commands
-
-All commands assume you are running on a Linux host with Docker and that your user can talk to the Docker daemon.
-
-- **Topology**
+### From source
 
 ```bash
-dockerscope topology
+git clone https://github.com/tal20100/DockerScope.git
+cd DockerScope
+pip install -e ".[dev]"
 ```
 
-Shows a summary of containers, including image, status, privilege, and network mode.
+**Requirements:**
+- Python 3.11+
+- Docker must be running (except for `scan-compose`, which works offline)
+- Your user must be in the `docker` group, or run with `sudo`:
+  ```bash
+  sudo usermod -aG docker $USER
+  # Log out and back in for this to take effect
+  ```
 
-**Example output:**
+## Commands
 
-```text
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ Name         ┃ Image         ┃ Status   ┃ Privileged ┃ Network  ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ web          │ nginx:latest  │ running  │ no         │ bridge   │
-│ portainer    │ portainer:ce  │ running  │ yes        │ host     │
-└──────────────┴───────────────┴──────────┴────────────┴──────────┘
+### `dockerscope topology`
+
+Quick overview of all containers on your host — running and stopped. Shows each container's image, network mode, published ports, and security-relevant flags at a glance.
+
+```
+$ dockerscope topology
+
+╭──────────────── Docker Topology ────────────────╮
+│ 4 container(s)  3 running  1 stopped            │
+╰─────────────────────────────────────────────────╯
+┌────────────┬──────────────┬─────────┬─────────┬──────────────────┬─────────┐
+│ Container  │ Image        │ Status  │ Network │ Ports            │ Flags   │
+├────────────┼──────────────┼─────────┼─────────┼──────────────────┼─────────┤
+│ nginx      │ nginx:1.25   │ running │ bridge  │ 0.0.0.0:80->80   │ clean   │
+│ jellyfin   │ jellyfin/..  │ running │ host    │                  │ HOSTNET │
+│ nextcloud  │ nextcloud:28 │ running │ bridge  │ 0.0.0.0:443->443 │ clean   │
+│ watchtower │ watchtower   │ running │ bridge  │                  │ SOCK    │
+└────────────┴──────────────┴─────────┴─────────┴──────────────────┴─────────┘
+
+Flags: PRIV=privileged  SOCK=docker.sock  HOSTNET=host network  clean=no issues
+Run 'dockerscope scan' to see full risk analysis and attack paths.
 ```
 
-- **Analyze**
+### `dockerscope scan [CONTAINER]`
+
+Scan all containers (or a specific one) for security risks and escape paths. Every finding includes:
+- **What's dangerous** — plain-language explanation
+- **Attack commands** — exactly what an attacker would run
+- **How to fix it** — specific remediation steps
 
 ```bash
-dockerscope analyze
-dockerscope analyze my-container
+dockerscope scan                # Scan all containers
+dockerscope scan jellyfin       # Scan specific container
 ```
 
-Analyzes all containers (or a single container) for risky configurations such as privileged mode, host networking, Docker socket mounts, dangerous host mounts, and wide-exposed ports.
-
-**Example output:**
-
-```text
-┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ Name         ┃ Image         ┃ Status   ┃ Privileged ┃ Network  ┃
-┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ portainer    │ portainer:ce  │ running  │ yes        │ host     │
-└──────────────┴───────────────┴──────────┴────────────┴──────────┘
-
-┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Container ┃ Type                 ┃ Description                                         ┃ Details                              ┃
-┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ portainer │ privileged_container │ Container is running in privileged mode.            │ network_mode=host                    │
-│ portainer │ host_network_mode    │ Container is using host network mode.              │                                      │
-│ portainer │ docker_sock_mount    │ Container has access to the Docker socket.         │ source=/var/run/docker.sock, …       │
-│ portainer │ wide_exposed_port    │ Port is exposed on all interfaces (0.0.0.0).       │ container_port=9000/tcp, host…       │
-└───────────┴──────────────────────┴──────────────────────────────────────────────────────┴──────────────────────────────────────┘
-```
-
-- **Simulate**
+You can export the attack graph for visualization:
 
 ```bash
-dockerscope simulate my-container
+dockerscope scan --export json -o graph.json
+dockerscope scan --export dot -o graph.dot
+dot -Tpng graph.dot -o graph.png    # Render with Graphviz
 ```
 
-Builds an internal attack graph and prints possible escalation paths starting from the specified container.
+#### Example output
 
-**Example output:**
+```
+============================================================
+jellyfin  jellyfin/jellyfin:latest
+============================================================
 
-```text
-Attack paths starting from container portainer:
-1. portainer -> docker.sock -> docker_daemon -> host_root (potential host compromise / root access)
-2. portainer -> host_root (potential host compromise / root access)
+CRITICAL  Container runs in privileged mode.
+  Container: jellyfin
+
+  An attacker inside this container has full access to all host
+  devices and can escape to the host with a single command.
+
+  Attack command:
+    nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash
+
+  Fix:
+    Remove 'privileged: true' from your docker-compose.yml. If the
+    container needs specific device access, use 'devices:' to grant
+    only what is needed.
+
+╔═══════════════ Escape Paths: 1 ═══════════════╗
+║ # │ Risk │ Path                         │ Hops ║
+╠═══╪══════╪══════════════════════════════╪══════╣
+║ 1 │  90% │ jellyfin -> host_root        │    1 ║
+╚═══╧══════╧══════════════════════════════╧══════╝
 ```
 
-- **Score**
+### `dockerscope scan-compose FILE`
+
+Scan a docker-compose file for security risks **without Docker running**. Parses the YAML statically and applies the same risk detection.
+
+Exits with code 1 if any CRITICAL risk is found — plug it into your CI pipeline to block dangerous deployments.
 
 ```bash
-dockerscope score
+dockerscope scan-compose docker-compose.yml
 ```
 
-Calculates an overall security score (0–100, grade A–F) based on detected risks and attack paths across all containers.
+```
+┌─ Scanning: docker-compose.yml — 3 services found ─┐
 
-- **Export**
+  nginx — no issues found
 
-```bash
-dockerscope export --format json --output graph.json
-dockerscope export --format dot | dot -Tpng > graph.png
+── dev-tools ──
+  CRITICAL: Container runs in privileged mode.
+  ...
+
+┌──────────── Summary ────────────┐
+│ Critical: 1  High: 0            │
+│                                 │
+│ Do not deploy without fixing    │
+│ critical issues                 │
+└─────────────────────────────────┘
 ```
 
-Exports the attack graph in JSON or DOT (Graphviz) format for further analysis or visualization.
+## Understanding the output
 
-- **Reachability**
+### Attack paths
 
-```bash
-dockerscope reachability my-container
-```
+When you run `dockerscope scan`, the tool builds a directed graph of all possible escape paths. Each path shows how an attacker could move from their initial position (inside a compromised container) toward a critical target (host root access or Docker daemon control).
 
-Analyzes network reachability for a container using host network configuration (`ip route`, `iptables`). On Linux, inspects routing tables and NAT rules to estimate whether published ports are reachable from LAN or Internet. On non-Linux hosts, provides basic network mode and port information only.
+**Example path:** `jellyfin → host_root` (1 hop, privileged escape)
 
-- **Scan Compose (placeholder)**
+This means: if an attacker gets code execution inside the Jellyfin container, they can use `nsenter` to escape directly to the host because the container runs in privileged mode.
 
-```bash
-dockerscope scan-compose docker-compose.yaml
-```
+**Risk scores** range from 0% to 100% and combine:
+- **Exploitability** — how easy is each step? (socket mount = trivial, capability abuse = requires knowledge)
+- **Impact** — what does the attacker gain? (host root = maximum impact)
+- **Path length** — shorter paths are more dangerous (fewer steps to compromise)
 
-Currently prints a placeholder message; later versions will inspect Docker Compose files before deployment.
+## Whitelist / known-safe containers
 
----
+Some containers legitimately need elevated privileges. For example, Portainer and Watchtower need the Docker socket to function — that's their whole purpose. You can acknowledge these with a whitelist so they don't clutter your scan results.
 
-## Whitelist configuration
-
-DockerScope supports whitelisting expected or accepted risks via a YAML file located at:
-
-- `~/.dockerscope/config.yaml`
-
-Format:
+Create `~/.dockerscope/config.yaml`:
 
 ```yaml
 whitelist:
   portainer:
     allow:
       - docker_sock_mount
-      - wide_exposed_port
+  watchtower:
+    allow:
+      - docker_sock_mount
 ```
 
-- The top-level key is `whitelist`.
-- Each child key is a **container name** (e.g., `portainer`).
-- Under `allow`, list **risk types** to ignore for that container.
+Whitelisted risks are excluded from scan output. The container name must match exactly.
 
-Supported risk types include:
+## Use in CI/CD
 
-- `privileged_container`
-- `docker_sock_mount`
-- `critical_capability`
-- `host_network_mode`
-- `host_pid_mode`
-- `dangerous_host_mount`
-- `dangerous_capability`
-- `wide_exposed_port`
-- `no_security_profiles`
-- `no_resource_limits`
-- `running_as_root`
-- `unpinned_image`
+Add `scan-compose` to your pipeline to catch misconfigurations before deployment:
 
-When a risk matches both the container name and a risk type listed in `allow`, it is filtered out of the CLI output.
-
----
-
-## Attack paths
-
-DockerScope builds a simple attack graph using `networkx` to represent how a compromised container could escalate:
-
-- `container -> docker.sock -> docker_daemon -> host_root`
-- `container -> host_root` (for privileged containers or dangerous host mounts)
-
-Each edge in the graph represents a security-relevant relationship, for example:
-
-- **mount_docker_sock** – the container can talk directly to the Docker daemon API.
-- **privileged_container** – the container can access host devices and kernel features.
-- **dangerous_host_mount** – the container has direct file-system access to sensitive host paths.
-
-The `simulate` command walks this graph and prints human-readable paths, highlighting which containers can potentially compromise the host or gain full control of Docker.
-
----
-
-## Development and testing
-
-1. Create and activate a virtual environment (recommended).
-2. Install the project in editable mode:
-
-```bash
-pip install -e .
+```yaml
+# .github/workflows/security.yml
+name: Docker Security Check
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install dockerscope
+      - run: dockerscope scan-compose docker-compose.yml
 ```
 
-3. Run tests:
-
-```bash
-pip install -e ".[dev]"
-pytest
-```
-
-4. Run the CLI against your local Docker environment:
-
-```bash
-dockerscope topology
-dockerscope analyze
-```
-
----
+Exit code 1 on critical risks means the CI job fails automatically.
 
 ## Contributing
 
-Contributions are welcome. To get started:
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development setup, how to add new detection rules, and PR guidelines.
 
-1. Fork the repository and create a feature branch.
-2. Keep changes focused and well-documented.
-3. Add or update tests under `tests/` where appropriate.
-4. Run the test suite and lint your code before opening a pull request.
-5. In your PR description, explain:
-   - What problem you are solving.
-   - How you validated your changes (manual tests, automated tests, etc.).
+## License
 
-Ideas for future work:
-
-- Compose file scanning and policy-as-code integrations.
-- Deeper Linux network analysis (veth pair tracing, bridge inspection).
-- Capability-aware attack path modeling (e.g., SYS_PTRACE → process injection paths).
+MIT License. See [LICENSE](LICENSE) for details.

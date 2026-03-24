@@ -1,10 +1,3 @@
-from __future__ import annotations
-
-from dockerscope.attack.attack_graph import build_attack_graph, explain_attack_paths
-from dockerscope.core.risks import evaluate_container_risks
-from dockerscope.models.container import ContainerInfo
-from dockerscope.models.risk import Risk
-
 """
 Basic sanity tests for the dockerscope package.
 
@@ -12,6 +5,11 @@ These tests are intentionally lightweight and avoid requiring a
 live Docker daemon, so they can run in more environments.
 """
 
+from __future__ import annotations
+
+from dockerscope.attack.attack_graph import build_attack_graph, explain_attack_paths
+from dockerscope.core.risks import evaluate_container_risks
+from dockerscope.models.container import ContainerInfo
 
 
 def test_evaluate_container_risks_privileged_and_docker_sock() -> None:
@@ -49,17 +47,8 @@ def test_attack_graph_paths() -> None:
             capabilities=[],
         )
     ]
-    risks = [
-        Risk(
-            container="test",
-            risk_type="docker_sock_mount",
-            description="",
-            details={},
-        )
-    ]
+    risks = evaluate_container_risks(containers[0])
 
     g = build_attack_graph(containers, risks)
     paths = explain_attack_paths(g, "test")
-    # Expect a path that ends in host_root eventually.
     assert any("host_root" in p.nodes for p in paths)
-
