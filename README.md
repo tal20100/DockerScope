@@ -237,10 +237,6 @@ jobs:
 
 Exit code 1 on critical risks means the CI job fails automatically.
 
-## Contributing
-
-See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development setup, how to add new detection rules, and PR guidelines.
-
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
