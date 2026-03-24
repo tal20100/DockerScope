@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any
 
 from dockerscope.models.container import ContainerInfo
 
 from .docker_client import list_containers
 
 
-def _extract_container_info(container: object) -> ContainerInfo:
+def _extract_container_info(container: Any) -> ContainerInfo:
     """
     Convert a Docker SDK container object into a ContainerInfo instance.
 
@@ -55,7 +55,7 @@ def discover_containers(all_containers: bool = False) -> list[ContainerInfo]:
     return [_extract_container_info(c) for c in containers]
 
 
-def find_container(name_or_id: str) -> Optional[ContainerInfo]:
+def find_container(name_or_id: str) -> ContainerInfo | None:
     """
     Find a single container by exact name or ID prefix.
     """
