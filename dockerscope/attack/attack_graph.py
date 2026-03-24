@@ -25,6 +25,7 @@ from dockerscope.models.risk import Risk
 @dataclass
 class AttackPath:
     """A complete attack path from a container to a critical target."""
+
     path_id: str
     nodes: list[str]
     description: str
@@ -35,10 +36,7 @@ class AttackPath:
     remediation: str = ""
 
 
-def build_attack_graph(
-        containers: Iterable[ContainerInfo],
-        risks: Iterable[Risk]
-) -> nx.DiGraph:
+def build_attack_graph(containers: Iterable[ContainerInfo], risks: Iterable[Risk]) -> nx.DiGraph:
     """
     Build an attack graph containing only real escape paths.
 
@@ -54,33 +52,31 @@ def build_attack_graph(
 
     # daemon -> host (daemon has full control)
     g.add_edge(
-        "docker_daemon", "host_root",
+        "docker_daemon",
+        "host_root",
         method="full_control",
         technique="Create Privileged Container",
-        exploitability=1.0, impact=1.0,
-        description="Docker daemon can create privileged containers with host root access"
+        exploitability=1.0,
+        impact=1.0,
+        description="Docker daemon can create privileged containers with host root access",
     )
 
     # socket -> daemon (socket provides API access)
     g.add_edge(
-        "docker.sock", "docker_daemon",
+        "docker.sock",
+        "docker_daemon",
         method="daemon_api",
         technique="Docker API Access",
-        exploitability=1.0, impact=0.95,
-        description="Docker socket provides full API access to daemon"
+        exploitability=1.0,
+        impact=0.95,
+        description="Docker socket provides full API access to daemon",
     )
 
     # Add container nodes
     risks_list = list(risks)
     for c in containers:
         risk_score = _calculate_container_risk_score(c, risks_list)
-        g.add_node(
-            c.name,
-            node_type="container",
-            label=c.name,
-            data=c,
-            risk_score=risk_score
-        )
+        g.add_node(c.name, node_type="container", label=c.name, data=c, risk_score=risk_score)
 
     # Add edges based on detected risks
     for r in risks_list:
@@ -89,10 +85,7 @@ def build_attack_graph(
     return g
 
 
-def _calculate_container_risk_score(
-        container: ContainerInfo,
-        risks: Iterable[Risk]
-) -> int:
+def _calculate_container_risk_score(container: ContainerInfo, risks: Iterable[Risk]) -> int:
     """Calculate risk score for a container (10-100)."""
     score = 10
 
@@ -127,52 +120,62 @@ def _add_risk_edges(g: nx.DiGraph, risk: Risk) -> None:
     if risk.risk_type == "docker_sock_mount":
         # container -> socket -> daemon -> host
         g.add_edge(
-            container_name, "docker.sock",
+            container_name,
+            "docker.sock",
             method="mount_docker_sock",
             technique="Docker Socket Mount Access",
-            exploitability=1.0, impact=0.9,
-            description=f"Container {container_name} has docker.sock mounted"
+            exploitability=1.0,
+            impact=0.9,
+            description=f"Container {container_name} has docker.sock mounted",
         )
 
     elif risk.risk_type == "privileged_container":
         # Direct escape: privileged -> host
         g.add_edge(
-            container_name, "host_root",
+            container_name,
+            "host_root",
             method="privileged_escape",
             technique="Container Escape via Privileged Mode",
-            exploitability=0.9, impact=1.0,
-            description="Privileged container can escape to host via nsenter or device mount"
+            exploitability=0.9,
+            impact=1.0,
+            description="Privileged container can escape to host via nsenter or device mount",
         )
 
     elif risk.risk_type == "cap_sys_admin":
         # Direct escape: SYS_ADMIN -> host
         g.add_edge(
-            container_name, "host_root",
+            container_name,
+            "host_root",
             method="cap_sys_admin_escape",
             technique="Container Escape via SYS_ADMIN",
-            exploitability=0.8, impact=1.0,
-            description="SYS_ADMIN allows mounting host filesystem"
+            exploitability=0.8,
+            impact=1.0,
+            description="SYS_ADMIN allows mounting host filesystem",
         )
 
     elif risk.risk_type == "host_pid_mode":
         # Direct escape: host PID -> host
         g.add_edge(
-            container_name, "host_root",
+            container_name,
+            "host_root",
             method="host_pid_escape",
             technique="Container Escape via Host PID Namespace",
-            exploitability=0.85, impact=1.0,
-            description="Host PID namespace allows nsenter to host"
+            exploitability=0.85,
+            impact=1.0,
+            description="Host PID namespace allows nsenter to host",
         )
 
     elif risk.risk_type == "dangerous_host_mount":
         # Direct escape: writable mount -> host
         source = risk.details.get("source", "")
         g.add_edge(
-            container_name, "host_root",
+            container_name,
+            "host_root",
             method="dangerous_mount_escape",
             technique=f"Host Compromise via Writable Mount ({source})",
-            exploitability=0.8, impact=0.9,
-            description=f"Writable mount to {source} enables host file modification"
+            exploitability=0.8,
+            impact=0.9,
+            description=f"Writable mount to {source} enables host file modification",
         )
 
     # host_network_mode and cap_sys_ptrace are reported as findings
@@ -181,9 +184,7 @@ def _add_risk_edges(g: nx.DiGraph, risk: Risk) -> None:
 
 
 def explain_attack_paths(
-        graph: nx.DiGraph,
-        container_name: str,
-        max_paths: int = 10
+    graph: nx.DiGraph, container_name: str, max_paths: int = 10
 ) -> list[AttackPath]:
     """
     Find and explain all attack paths from a container to host_root
@@ -201,10 +202,7 @@ def explain_attack_paths(
 
         try:
             for path_nodes in nx.all_simple_paths(
-                    graph,
-                    source=container_name,
-                    target=target,
-                    cutoff=5
+                graph, source=container_name, target=target, cutoff=5
             ):
                 attack_path = _create_attack_path(graph, path_nodes, target)
                 paths.append(attack_path)
@@ -218,11 +216,7 @@ def explain_attack_paths(
     return paths[:max_paths]
 
 
-def _create_attack_path(
-        graph: nx.DiGraph,
-        path_nodes: list[str],
-        target: str
-) -> AttackPath:
+def _create_attack_path(graph: nx.DiGraph, path_nodes: list[str], target: str) -> AttackPath:
     """Create an AttackPath with scoring metrics."""
     techniques = []
     exploitability_scores = []
@@ -237,8 +231,7 @@ def _create_attack_path(
             exploitability_scores.append(edge_data.get("exploitability", 0.5))
 
     avg_exploitability = (
-        sum(exploitability_scores) / len(exploitability_scores)
-        if exploitability_scores else 0.5
+        sum(exploitability_scores) / len(exploitability_scores) if exploitability_scores else 0.5
     )
 
     target_data = graph.nodes[path_nodes[-1]]
@@ -258,15 +251,11 @@ def _create_attack_path(
         impact=impact,
         risk_score=risk_score,
         techniques=techniques,
-        remediation=remediation
+        remediation=remediation,
     )
 
 
-def _build_path_description(
-        graph: nx.DiGraph,
-        path_nodes: list[str],
-        target: str
-) -> str:
+def _build_path_description(graph: nx.DiGraph, path_nodes: list[str], target: str) -> str:
     """Build human-readable description of attack path."""
     parts = []
 
@@ -312,7 +301,9 @@ def _build_remediation(graph: nx.DiGraph, path_nodes: list[str]) -> str:
         elif method == "dangerous_mount_escape":
             recommendations.append("Remove dangerous mount or make read-only (:ro)")
 
-    return "; ".join(recommendations) if recommendations else "Review container security configuration"
+    return (
+        "; ".join(recommendations) if recommendations else "Review container security configuration"
+    )
 
 
 def build_attack_tree(paths: list[AttackPath], container_name: str) -> Tree:
@@ -353,6 +344,7 @@ def build_attack_tree(paths: list[AttackPath], container_name: str) -> Tree:
 def export_graph_to_dict(graph: nx.DiGraph) -> dict:
     """Export attack graph to dictionary for JSON serialization."""
     from networkx.readwrite import json_graph
+
     return json_graph.node_link_data(graph)
 
 
@@ -372,30 +364,25 @@ def export_graph_to_dot(graph: nx.DiGraph) -> str:
     """Export attack graph to Graphviz DOT format."""
     lines = []
     lines.append("digraph AttackGraph {")
-    lines.append('  rankdir=LR;')
-    lines.append('  node [shape=box, style=filled];')
-    lines.append('')
+    lines.append("  rankdir=LR;")
+    lines.append("  node [shape=box, style=filled];")
+    lines.append("")
 
-    colors = {
-        'host': 'red',
-        'daemon': 'orange',
-        'container': 'lightblue',
-        'socket': 'pink'
-    }
+    colors = {"host": "red", "daemon": "orange", "container": "lightblue", "socket": "pink"}
 
     for node, data in graph.nodes(data=True):
-        label = data.get('label', node)
-        node_type = data.get('node_type', 'unknown')
-        color = colors.get(node_type, 'white')
+        label = data.get("label", node)
+        node_type = data.get("node_type", "unknown")
+        color = colors.get(node_type, "white")
         label = label.replace('"', '\\"')
         lines.append(f'  "{node}" [label="{label}", fillcolor={color}];')
 
-    lines.append('')
+    lines.append("")
 
     for source, target, data in graph.edges(data=True):
-        method = data.get('method', '')
+        method = data.get("method", "")
         lines.append(f'  "{source}" -> "{target}" [label="{method}"];')
 
-    lines.append('}')
+    lines.append("}")
 
-    return '\n'.join(lines)
+    return "\n".join(lines)

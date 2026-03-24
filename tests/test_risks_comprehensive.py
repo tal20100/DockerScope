@@ -1,4 +1,5 @@
 """Comprehensive tests for risk evaluation and whitelist filtering."""
+
 from __future__ import annotations
 
 import pytest
@@ -32,6 +33,7 @@ def _base_container(**overrides) -> ContainerInfo:
 # Risk evaluation
 # ========================================================================
 
+
 class TestPrivilegedContainer:
     def test_privileged_detected(self):
         c = _base_container(privileged=True)
@@ -59,80 +61,79 @@ class TestPrivilegedContainer:
 
 class TestDockerSocketMount:
     def test_var_run_docker_sock(self):
-        c = _base_container(mounts=[
-            {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}
-        ])
+        c = _base_container(
+            mounts=[{"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}]
+        )
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "docker_sock_mount" for r in risks)
 
     def test_run_docker_sock(self):
-        c = _base_container(mounts=[
-            {"Source": "/run/docker.sock", "Destination": "/run/docker.sock"}
-        ])
+        c = _base_container(
+            mounts=[{"Source": "/run/docker.sock", "Destination": "/run/docker.sock"}]
+        )
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "docker_sock_mount" for r in risks)
 
     def test_docker_sock_detected_by_destination(self):
-        c = _base_container(mounts=[
-            {"Source": "/some/path", "Destination": "/var/run/docker.sock"}
-        ])
+        c = _base_container(
+            mounts=[{"Source": "/some/path", "Destination": "/var/run/docker.sock"}]
+        )
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "docker_sock_mount" for r in risks)
 
     def test_normal_mount_no_sock_risk(self):
-        c = _base_container(mounts=[
-            {"Source": "/data", "Destination": "/app/data"}
-        ])
+        c = _base_container(mounts=[{"Source": "/data", "Destination": "/app/data"}])
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "docker_sock_mount" for r in risks)
 
     def test_docker_sock_has_attack_commands(self):
-        c = _base_container(mounts=[
-            {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}
-        ])
+        c = _base_container(
+            mounts=[{"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}]
+        )
         risks = evaluate_container_risks(c)
         sock = [r for r in risks if r.risk_type == "docker_sock_mount"][0]
         assert any("curl" in cmd for cmd in sock.attack_commands)
 
 
 class TestDangerousMounts:
-    @pytest.mark.parametrize("path", [
-        "/etc", "/root", "/boot", "/var/lib/docker",
-        "/usr/bin", "/proc", "/sys", "/dev",
-    ])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/etc",
+            "/root",
+            "/boot",
+            "/var/lib/docker",
+            "/usr/bin",
+            "/proc",
+            "/sys",
+            "/dev",
+        ],
+    )
     def test_writable_dangerous_paths_detected(self, path: str):
-        c = _base_container(mounts=[
-            {"Source": path, "Destination": "/mnt", "Mode": "rw"}
-        ])
+        c = _base_container(mounts=[{"Source": path, "Destination": "/mnt", "Mode": "rw"}])
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "dangerous_host_mount" for r in risks)
 
     def test_root_mount_detected(self):
-        c = _base_container(mounts=[
-            {"Source": "/", "Destination": "/host"}
-        ])
+        c = _base_container(mounts=[{"Source": "/", "Destination": "/host"}])
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "dangerous_host_mount" for r in risks)
 
     def test_subpath_of_dangerous_detected(self):
-        c = _base_container(mounts=[
-            {"Source": "/etc/ssh", "Destination": "/mnt/ssh"}
-        ])
+        c = _base_container(mounts=[{"Source": "/etc/ssh", "Destination": "/mnt/ssh"}])
         risks = evaluate_container_risks(c)
         assert any(r.risk_type == "dangerous_host_mount" for r in risks)
 
     def test_safe_mount_no_risk(self):
-        c = _base_container(mounts=[
-            {"Source": "/home/user/data", "Destination": "/app/data"}
-        ])
+        c = _base_container(mounts=[{"Source": "/home/user/data", "Destination": "/app/data"}])
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "dangerous_host_mount" for r in risks)
 
     def test_docker_sock_not_duplicated_as_dangerous_mount(self):
         """Docker socket should only appear as docker_sock_mount, not also as dangerous_host_mount."""
-        c = _base_container(mounts=[
-            {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}
-        ])
+        c = _base_container(
+            mounts=[{"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}]
+        )
         risks = evaluate_container_risks(c)
         types = [r.risk_type for r in risks]
         assert types.count("docker_sock_mount") == 1
@@ -140,16 +141,12 @@ class TestDangerousMounts:
 
     def test_read_only_mount_not_flagged(self):
         """Read-only mounts are not escape vectors."""
-        c = _base_container(mounts=[
-            {"Source": "/etc", "Destination": "/mnt/etc", "Mode": "ro"}
-        ])
+        c = _base_container(mounts=[{"Source": "/etc", "Destination": "/mnt/etc", "Mode": "ro"}])
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "dangerous_host_mount" for r in risks)
 
     def test_writable_mount_severity_is_critical(self):
-        c = _base_container(mounts=[
-            {"Source": "/etc", "Destination": "/mnt/etc", "Mode": "rw"}
-        ])
+        c = _base_container(mounts=[{"Source": "/etc", "Destination": "/mnt/etc", "Mode": "rw"}])
         risks = evaluate_container_risks(c)
         mount_risks = [r for r in risks if r.risk_type == "dangerous_host_mount"]
         assert mount_risks[0].severity == "CRITICAL"
@@ -240,9 +237,7 @@ class TestRemovedRiskTypes:
     """Verify removed risk types no longer generate findings."""
 
     def test_wide_exposed_port_not_flagged(self):
-        c = _base_container(ports={
-            "80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"}]
-        })
+        c = _base_container(ports={"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"}]})
         risks = evaluate_container_risks(c)
         assert not any(r.risk_type == "wide_exposed_port" for r in risks)
 
@@ -300,6 +295,7 @@ class TestIsDangerousMount:
 # ========================================================================
 # Whitelist filtering
 # ========================================================================
+
 
 class TestWhitelistFiltering:
     def _make_risk(self, **overrides) -> Risk:
