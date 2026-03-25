@@ -60,15 +60,16 @@ jobs:
       - run: uv python install 3.12
       - name: Install from TestPyPI and verify CLI
         run: |
+          uv venv .venv
           for i in 1 2 3; do
-            uv pip install --system \
+            uv pip install --python .venv/bin/python \
               --index-url https://test.pypi.org/simple/ \
               --extra-index-url https://pypi.org/simple/ \
               dockerscope && break
             echo "Attempt $i failed, waiting for index..."
             sleep 15
           done
-          dockerscope --help
+          .venv/bin/dockerscope --help
 
   # ── Publish to PyPI ───────────────────────────────────────
   publish-pypi:
