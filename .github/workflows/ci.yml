@@ -58,5 +58,6 @@ jobs:
       - run: uv build
       - name: Smoke test
         run: |
-          uv pip install --system dist/*.whl
-          dockerscope --help
+          uv venv .venv
+          uv pip install --python .venv/bin/python dist/*.whl
+          .venv/bin/dockerscope --help
