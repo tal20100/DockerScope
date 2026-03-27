@@ -347,7 +347,9 @@ def scan(
 
 @app.command("scan-compose")
 def scan_compose(
-    path: str = typer.Argument(..., help="Path to a docker-compose file or a directory to scan recursively"),
+    path: str = typer.Argument(
+        ..., help="Path to a docker-compose file or a directory to scan recursively"
+    ),
 ) -> None:
     """
     Scan docker-compose files for security risks before deployment.
@@ -427,10 +429,7 @@ def _scan_compose_directory(directory: str) -> None:
             console.print(f"\n[dim]{filepath} — skipped (empty or invalid)[/dim]")
             continue
 
-        console.print(
-            f"\n[bold blue]── {filepath}[/bold blue]  "
-            f"({len(results)} service(s))"
-        )
+        console.print(f"\n[bold blue]── {filepath}[/bold blue]  ({len(results)} service(s))")
 
         total_critical, total_high, has_critical = _print_compose_results(results)
         grand_critical += total_critical
