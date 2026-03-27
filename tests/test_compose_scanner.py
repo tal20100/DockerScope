@@ -175,9 +175,7 @@ class TestComposeDirectoryScanner:
 
     def test_matches_variant_compose_names(self, tmp_path):
         """compose-1.yaml, docker-compose.prod.yml, etc. should all be found."""
-        (tmp_path / "compose-1.yaml").write_text(
-            "services:\n  a:\n    image: alpine:3.19\n"
-        )
+        (tmp_path / "compose-1.yaml").write_text("services:\n  a:\n    image: alpine:3.19\n")
         (tmp_path / "docker-compose.prod.yml").write_text(
             "services:\n  b:\n    image: alpine:3.19\n"
         )
@@ -186,9 +184,7 @@ class TestComposeDirectoryScanner:
 
     def test_ignores_non_compose_yaml_files(self, tmp_path):
         (tmp_path / "config.yaml").write_text("key: value\n")
-        (tmp_path / "docker-compose.yml").write_text(
-            "services:\n  web:\n    image: nginx:1.25\n"
-        )
+        (tmp_path / "docker-compose.yml").write_text("services:\n  web:\n    image: nginx:1.25\n")
         results = scan_compose_directory(str(tmp_path))
         assert len(results) == 1
 
