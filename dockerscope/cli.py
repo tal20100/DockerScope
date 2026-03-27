@@ -346,17 +346,38 @@ def scan(
 
 
 @app.command("scan-compose")
-def scan_compose(file: str = typer.Argument(..., help="Path to docker-compose.yml file")) -> None:
+def scan_compose(
+    path: str = typer.Argument(
+        ..., help="Path to a docker-compose file or a directory to scan recursively"
+    ),
+) -> None:
     """
-    Scan a docker-compose file for security risks before deployment.
+    Scan docker-compose files for security risks before deployment.
 
-    Parses the compose file statically - Docker does NOT need to be running.
+    Accepts a single compose file **or** a directory.  When given a directory,
+    recursively finds all docker-compose.yml, docker-compose.yaml, and
+    compose.yaml files and scans each one.
+
+    Parses compose files statically - Docker does NOT need to be running.
     Exits with code 1 if critical risks are found (useful for CI).
 
     Examples:
         dockerscope scan-compose docker-compose.yml
         dockerscope scan-compose ./stacks/nextcloud/docker-compose.yml
+        dockerscope scan-compose ./stacks/
     """
+    from pathlib import Path as _Path
+
+    target = _Path(path)
+
+    if target.is_dir():
+        _scan_compose_directory(path)
+    else:
+        _scan_compose_single(path)
+
+
+def _scan_compose_single(file: str) -> None:
+    """Scan a single compose file and print results."""
     try:
         results = scan_compose_file(file)
     except FileNotFoundError as exc:
@@ -374,6 +395,58 @@ def scan_compose(file: str = typer.Argument(..., help="Path to docker-compose.ym
         )
     )
 
+    total_critical, total_high, has_critical = _print_compose_results(results)
+    _print_compose_summary(total_critical, total_high)
+
+    if has_critical:
+        raise typer.Exit(code=1)
+
+
+def _scan_compose_directory(directory: str) -> None:
+    """Recursively scan a directory for compose files and print aggregated results."""
+    from dockerscope.core.compose_scanner import scan_compose_directory
+
+    file_results = scan_compose_directory(directory)
+
+    if not file_results:
+        console.print(f"[yellow]No compose files found in {directory}[/yellow]")
+        return
+
+    console.print(
+        Panel(
+            f"[bold]Scanning directory:[/bold] [cyan]{directory}[/cyan] - "
+            f"[bold]{len(file_results)}[/bold] compose file(s) found",
+            border_style="blue",
+        )
+    )
+
+    grand_critical = 0
+    grand_high = 0
+    grand_has_critical = False
+
+    for filepath, results in file_results:
+        if not results:
+            console.print(f"\n[dim]{filepath} — skipped (empty or invalid)[/dim]")
+            continue
+
+        console.print(f"\n[bold blue]── {filepath}[/bold blue]  ({len(results)} service(s))")
+
+        total_critical, total_high, has_critical = _print_compose_results(results)
+        grand_critical += total_critical
+        grand_high += total_high
+        if has_critical:
+            grand_has_critical = True
+
+    _print_compose_summary(grand_critical, grand_high)
+
+    if grand_has_critical:
+        raise typer.Exit(code=1)
+
+
+def _print_compose_results(
+    results: list,
+) -> tuple[int, int, bool]:
+    """Print per-service risks and return counts."""
     total_critical = 0
     total_high = 0
     has_critical = False
@@ -392,7 +465,11 @@ def scan_compose(file: str = typer.Argument(..., help="Path to docker-compose.ym
             elif r.severity == "HIGH":
                 total_high += 1
 
-    # Summary
+    return total_critical, total_high, has_critical
+
+
+def _print_compose_summary(total_critical: int, total_high: int) -> None:
+    """Print the final summary panel."""
     summary = f"[red]Critical: {total_critical}[/red]  [yellow]High: {total_high}[/yellow]"
 
     if total_critical > 0:
@@ -409,9 +486,6 @@ def scan_compose(file: str = typer.Argument(..., help="Path to docker-compose.ym
             border_style="red" if total_critical > 0 else ("yellow" if total_high > 0 else "green"),
         )
     )
-
-    if has_critical:
-        raise typer.Exit(code=1)
 
 
 def main() -> None:
