@@ -233,3 +233,31 @@ class TestScanCompose:
         compose.write_text("services:\n  web:\n    image: nginx:1.25\n  api:\n    image: node:20\n")
         result = runner.invoke(app, ["scan-compose", str(compose)])
         assert "2" in result.output
+
+    def test_scan_compose_directory_safe(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "docker-compose.yml").write_text(
+            "services:\n  web:\n    image: nginx:1.25\n"
+        )
+        result = runner.invoke(app, ["scan-compose", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "1" in result.output  # 1 compose file found
+        assert "No dangerous" in result.output or "no issues" in result.output.lower()
+
+    def test_scan_compose_directory_critical_exits_1(self, tmp_path):
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n  danger:\n    image: alpine:3.19\n    privileged: true\n"
+        )
+        result = runner.invoke(app, ["scan-compose", str(tmp_path)])
+        assert result.exit_code == 1
+
+    def test_scan_compose_empty_directory(self, tmp_path):
+        result = runner.invoke(app, ["scan-compose", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "No compose files found" in result.output
+
+    def test_scan_compose_directory_skips_invalid_yaml(self, tmp_path):
+        (tmp_path / "docker-compose.yml").write_text("{{bad yaml: [")
+        result = runner.invoke(app, ["scan-compose", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "skipped" in result.output.lower()
