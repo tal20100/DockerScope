@@ -15,7 +15,6 @@ from dockerscope.core.risks import evaluate_container_risks
 from dockerscope.models.container import ContainerInfo
 from dockerscope.models.risk import Risk
 
-
 _COMPOSE_GLOBS = (
     "docker-compose*.yml",
     "docker-compose*.yaml",
