@@ -4,11 +4,11 @@
 
 ## Real-World Use Case
 
-You're a DevOps engineer or a homelabber running self-hosted services — Jellyfin, Nextcloud, Home Assistant, Grafana. You pulled docker-compose files from GitHub or a blog post, ran `docker compose up`, and everything works. But those files often include `privileged: true`, Docker socket mounts, or `network_mode: host` without explaining the security implications.
+Whether you're a DevOps engineer managing on-premise infrastructure or a homelabber running self-hosted services like Jellyfin, Nextcloud, or Grafana, deploying containers is often as simple as running `docker compose up`. However, many popular compose files and tutorials include flags like `privileged: true`, Docker socket mounts, or `network_mode: host` without explaining the severe security implications behind them.
 
-Tools like **Trivy** and **Snyk** scan container *images* for known CVEs — outdated packages, vulnerable libraries. That's important, but it misses a completely different class of risk: **what happens after an attacker gets code execution inside a container?** A container with zero CVEs but `privileged: true` can escape to your host in seconds.
+Most traditional container security scanners focus entirely on finding known vulnerabilities (CVEs) within container *images*—such as outdated packages or vulnerable libraries. While that is important, it often overlooks a critical class of risk: **runtime infrastructure misconfigurations**. 
 
-**DockerScope** fills that gap. It analyzes your running Docker environment (or your compose files before deployment) and models real attack paths — privilege escalation, host escape through misconfigurations, and Docker daemon takeover. It tells you exactly what's dangerous, shows the commands an attacker would run, and tells you how to fix it.
+**DockerScope** is an open-source tool designed to fill that exact gap. It analyzes your running Docker environment (or your compose files statically before deployment) and **models real attack paths**—including privilege escalation, host escape through misconfigurations, and Docker daemon takeover. By simulating the steps an attacker would take after gaining initial code execution, it highlights exactly what's dangerous, shows the specific commands used for escape, and provides actionable steps to fix it.
 
 ## What it detects
 
@@ -41,29 +41,30 @@ dockerscope scan jellyfin
 
 # Scan a compose file BEFORE deploying (no Docker needed)
 dockerscope scan-compose docker-compose.yml
+
+# Scan an entire directory of compose files at once
+dockerscope scan-compose ./stacks/
 ```
 
 ## Installation
 
-### pip (recommended)
+### Via pip (recommended)
 
 ```bash
 pip install dockerscope
 ```
 
-### Docker
+This is the recommended way to use DockerScope. It gives you full access to both static compose scanning (`scan-compose`) and live container auditing (`scan`, `topology`).
 
-Run DockerScope itself in a container. It needs access to the Docker socket to inspect other containers:
+### Via Docker
+
+If you still want to run a live audit on your running containers, you can mount the Docker socket:
 
 ```bash
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock dockerscope scan
 ```
 
-To scan a compose file:
-
-```bash
-docker run --rm -v ./docker-compose.yml:/app/docker-compose.yml dockerscope scan-compose /app/docker-compose.yml
-```
+> **Note:** Yes, DockerScope flags socket mounts as a critical risk — because they are. We don't want to recommend people blindly mount their socket just to run a security scan. For offline auditing, use `scan-compose` via pip instead — no Docker socket needed.
 
 ### From source
 
@@ -75,8 +76,8 @@ pip install -e ".[dev]"
 
 **Requirements:**
 - Python 3.11+
-- Docker must be running (except for `scan-compose`, which works offline)
-- Your user must be in the `docker` group, or run with `sudo`:
+- Docker must be running for `scan` and `topology` commands. `scan-compose` works completely offline.
+- For live scanning, your user must be in the `docker` group, or run with `sudo`:
   ```bash
   sudo usermod -aG docker $USER
   # Log out and back in for this to take effect
@@ -155,22 +156,27 @@ CRITICAL  Container runs in privileged mode.
 ╚═══╧══════╧══════════════════════════════╧══════╝
 ```
 
-### `dockerscope scan-compose FILE`
+### `dockerscope scan-compose PATH`
 
-Scan a docker-compose file for security risks **without Docker running**. Parses the YAML statically and applies the same risk detection.
+Scan compose files for security risks **without Docker running**. Parses YAML statically and applies the same risk detection. Accepts a single file or a directory — when given a directory, it recursively finds all compose files (`docker-compose.yml`, `docker-compose.yaml`, `compose.yaml`, `compose-*.yaml`, etc.) and scans each one.
 
 Exits with code 1 if any CRITICAL risk is found — plug it into your CI pipeline to block dangerous deployments.
 
 ```bash
+# Scan a single file
 dockerscope scan-compose docker-compose.yml
+
+# Scan an entire directory tree
+dockerscope scan-compose ./stacks/
 ```
 
 ```
-┌─ Scanning: docker-compose.yml — 3 services found ─┐
+┌─ Scanning directory: ./stacks/ — 3 compose file(s) found ─┐
 
+── ./stacks/nginx/docker-compose.yml ──  (1 service(s))
   nginx — no issues found
 
-── dev-tools ──
+── ./stacks/dev/docker-compose.yml ──  (1 service(s))
   CRITICAL: Container runs in privileged mode.
   ...
 
@@ -233,9 +239,15 @@ jobs:
           python-version: "3.11"
       - run: pip install dockerscope
       - run: dockerscope scan-compose docker-compose.yml
+      # Or scan all compose files in the repo:
+      # - run: dockerscope scan-compose .
 ```
 
 Exit code 1 on critical risks means the CI job fails automatically.
+
+## Disclaimer
+
+**DockerScope** is an independent open-source project and is not affiliated with, endorsed by, or sponsored by **Docker, Inc.** Docker and the Docker logo are trademarks or registered trademarks of Docker, Inc. in the United States and/or other countries. This tool is provided "as is" for security auditing and educational purposes only.
 
 ## License
 

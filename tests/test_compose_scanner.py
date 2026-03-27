@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dockerscope.core.compose_scanner import scan_compose_file
+from dockerscope.core.compose_scanner import scan_compose_directory, scan_compose_file
 
 
 class TestComposeScanner:
@@ -130,3 +130,66 @@ class TestComposeScanner:
         results = scan_compose_file(str(compose))
         _, risks = results[0]
         assert any(r.risk_type == "dangerous_host_mount" for r in risks)
+
+
+class TestComposeDirectoryScanner:
+    def test_finds_compose_files_recursively(self, tmp_path):
+        (tmp_path / "stackA").mkdir()
+        (tmp_path / "stackB" / "nested").mkdir(parents=True)
+        (tmp_path / "stackA" / "docker-compose.yml").write_text(
+            "services:\n  web:\n    image: nginx:1.25\n"
+        )
+        (tmp_path / "stackB" / "nested" / "compose.yaml").write_text(
+            "services:\n  api:\n    image: node:20\n"
+        )
+        results = scan_compose_directory(str(tmp_path))
+        assert len(results) == 2
+        all_services = [name for _, file_results in results for name, _ in file_results]
+        assert "web" in all_services
+        assert "api" in all_services
+
+    def test_empty_directory_returns_empty(self, tmp_path):
+        results = scan_compose_directory(str(tmp_path))
+        assert results == []
+
+    def test_invalid_yaml_is_skipped(self, tmp_path):
+        (tmp_path / "docker-compose.yml").write_text("{{bad yaml: [")
+        results = scan_compose_directory(str(tmp_path))
+        assert len(results) == 1
+        filepath, file_results = results[0]
+        assert file_results == []
+
+    def test_aggregates_risks_across_files(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        (tmp_path / "a" / "docker-compose.yml").write_text(
+            "services:\n  danger:\n    image: alpine:3.19\n    privileged: true\n"
+        )
+        (tmp_path / "b" / "docker-compose.yaml").write_text(
+            "services:\n  safe:\n    image: alpine:3.19\n"
+        )
+        results = scan_compose_directory(str(tmp_path))
+        assert len(results) == 2
+        all_risks = [r for _, file_results in results for _, risks in file_results for r in risks]
+        assert any(r.risk_type == "privileged_container" for r in all_risks)
+
+    def test_matches_variant_compose_names(self, tmp_path):
+        """compose-1.yaml, docker-compose.prod.yml, etc. should all be found."""
+        (tmp_path / "compose-1.yaml").write_text("services:\n  a:\n    image: alpine:3.19\n")
+        (tmp_path / "docker-compose.prod.yml").write_text(
+            "services:\n  b:\n    image: alpine:3.19\n"
+        )
+        results = scan_compose_directory(str(tmp_path))
+        assert len(results) == 2
+
+    def test_ignores_non_compose_yaml_files(self, tmp_path):
+        (tmp_path / "config.yaml").write_text("key: value\n")
+        (tmp_path / "docker-compose.yml").write_text("services:\n  web:\n    image: nginx:1.25\n")
+        results = scan_compose_directory(str(tmp_path))
+        assert len(results) == 1
+
+    def test_not_a_directory_raises(self, tmp_path):
+        f = tmp_path / "file.txt"
+        f.write_text("hello")
+        with pytest.raises(NotADirectoryError):
+            scan_compose_directory(str(f))
