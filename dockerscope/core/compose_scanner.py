@@ -47,9 +47,7 @@ def scan_compose_directory(
     if not root.is_dir():
         raise NotADirectoryError(f"Not a directory: {root}")
 
-    compose_files = sorted(
-        f for f in root.rglob("*") if _is_compose_file(f.name) and f.is_file()
-    )
+    compose_files = sorted(f for f in root.rglob("*") if _is_compose_file(f.name) and f.is_file())
 
     all_results: list[tuple[str, list[tuple[str, list[Risk]]]]] = []
     for compose_file in compose_files:
