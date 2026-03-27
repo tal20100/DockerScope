@@ -2,7 +2,7 @@
 
 Parses a docker-compose YAML file and evaluates each service for
 misconfigurations using the same detection logic as the runtime analyzer.
-Does NOT require a running Docker daemon.
+does NOT require a running Docker daemon.
 """
 
 from __future__ import annotations
@@ -14,6 +14,54 @@ import yaml
 from dockerscope.core.risks import evaluate_container_risks
 from dockerscope.models.container import ContainerInfo
 from dockerscope.models.risk import Risk
+
+
+_COMPOSE_GLOBS = (
+    "docker-compose*.yml",
+    "docker-compose*.yaml",
+    "compose*.yml",
+    "compose*.yaml",
+)
+
+
+def _is_compose_file(name: str) -> bool:
+    """Return True if filename looks like a docker-compose file."""
+    from fnmatch import fnmatch
+
+    return any(fnmatch(name, pat) for pat in _COMPOSE_GLOBS)
+
+
+def scan_compose_directory(
+    path: str,
+) -> list[tuple[str, list[tuple[str, list[Risk]]]]]:
+    """Recursively scan a directory for compose files and return per-file results.
+
+    Args:
+        path: Filesystem path to a directory.
+
+    Returns:
+        List of (file_path, results) tuples where *results* has the same shape
+        as :func:`scan_compose_file` output.  Files that fail to parse are
+        skipped with a warning entry (file_path, []).
+    """
+    root = Path(path)
+    if not root.is_dir():
+        raise NotADirectoryError(f"Not a directory: {root}")
+
+    compose_files = sorted(
+        f for f in root.rglob("*") if _is_compose_file(f.name) and f.is_file()
+    )
+
+    all_results: list[tuple[str, list[tuple[str, list[Risk]]]]] = []
+    for compose_file in compose_files:
+        try:
+            results = scan_compose_file(str(compose_file))
+        except (ValueError, FileNotFoundError):
+            # Skip invalid / unreadable files — they are reported as empty.
+            results = []
+        all_results.append((str(compose_file), results))
+
+    return all_results
 
 
 def scan_compose_file(path: str) -> list[tuple[str, list[Risk]]]:
